@@ -146,142 +146,179 @@ def run_doe(cold_vel_array, hot_vel_array, case_file, plane_name,
     # Run DOE matrix
     sim_count = 0
     start_time = datetime.now()
+    cancelled = False
 
-    for i, cold_vel in enumerate(cold_vel_array):
-        for j, hot_vel in enumerate(hot_vel_array):
-            sim_count += 1
-            elapsed = (datetime.now() - start_time).total_seconds()
-            avg_time = elapsed / sim_count if sim_count > 0 else 0
-            remaining = avg_time * (n_sims - sim_count)
+    print(f"\n{'='*70}")
+    print(f"Press Ctrl+C at any time to cancel and clean up")
+    print(f"{'='*70}")
 
-            # Main console: brief progress only
-            print(f"\n[Sim {sim_count}/{n_sims}] Cold={cold_vel:.2f} m/s, Hot={hot_vel:.2f} m/s")
-            print(f"  Progress: {100*sim_count/n_sims:.1f}% | "
-                  f"Elapsed: {elapsed/60:.1f} min | "
-                  f"Remaining: ~{remaining/60:.1f} min")
+    try:
+        for i, cold_vel in enumerate(cold_vel_array):
+            for j, hot_vel in enumerate(hot_vel_array):
+                sim_count += 1
+                elapsed = (datetime.now() - start_time).total_seconds()
+                avg_time = elapsed / sim_count if sim_count > 0 else 0
+                remaining = avg_time * (n_sims - sim_count)
 
-            # Redirect to Fluent window for all Fluent operations
-            if separate_fluent_window:
-                sys.stdout = fluent_log_file
-                sys.stderr = fluent_log_file
-                print(f"\n{'='*70}")
-                print(f"SIMULATION {sim_count}/{n_sims}")
-                print(f"{'='*70}")
-                print(f"Cold inlet velocity: {cold_vel:.3f} m/s")
-                print(f"Hot inlet velocity: {hot_vel:.3f} m/s")
-                print(f"Iterations: {iterations}")
-                fluent_log_file.flush()
+                # Main console: brief progress only
+                print(f"\n[Sim {sim_count}/{n_sims}] Cold={cold_vel:.2f} m/s, Hot={hot_vel:.2f} m/s")
+                print(f"  Progress: {100*sim_count/n_sims:.1f}% | "
+                      f"Elapsed: {elapsed/60:.1f} min | "
+                      f"Remaining: ~{remaining/60:.1f} min")
 
-            # Set boundary conditions (using newer syntax)
-            solver_session.settings.setup.boundary_conditions.velocity_inlet["cold-inlet"].momentum.velocity_magnitude.value = float(cold_vel)
-            solver_session.settings.setup.boundary_conditions.velocity_inlet["hot-inlet"].momentum.velocity_magnitude.value = float(hot_vel)
+                # Redirect to Fluent window for all Fluent operations
+                if separate_fluent_window:
+                    sys.stdout = fluent_log_file
+                    sys.stderr = fluent_log_file
+                    print(f"\n{'='*70}")
+                    print(f"SIMULATION {sim_count}/{n_sims}")
+                    print(f"{'='*70}")
+                    print(f"Cold inlet velocity: {cold_vel:.3f} m/s")
+                    print(f"Hot inlet velocity: {hot_vel:.3f} m/s")
+                    print(f"Iterations: {iterations}")
+                    fluent_log_file.flush()
 
-            # Initialize and solve (Fluent output goes to separate window)
-            solver_session.settings.solution.initialization.initialization_type = "standard"
-            solver_session.settings.solution.initialization.standard_initialize()
-            solver_session.settings.solution.run_calculation.iterate(iter_count=iterations)
+                # Set boundary conditions (using newer syntax)
+                solver_session.settings.setup.boundary_conditions.velocity_inlet["cold-inlet"].momentum.velocity_magnitude.value = float(cold_vel)
+                solver_session.settings.setup.boundary_conditions.velocity_inlet["hot-inlet"].momentum.velocity_magnitude.value = float(hot_vel)
 
-            # Restore stdout for progress messages
-            if separate_fluent_window:
-                sys.stdout = original_stdout
-                sys.stderr = original_stderr
+                # Initialize and solve (Fluent output goes to separate window)
+                solver_session.settings.solution.initialization.initialization_type = "standard"
+                solver_session.settings.solution.initialization.standard_initialize()
+                solver_session.settings.solution.run_calculation.iterate(iter_count=iterations)
 
-            # Extract field data
-            print(f"  Extracting field data from '{plane_name}'...")
+                # Restore stdout for progress messages
+                if separate_fluent_window:
+                    sys.stdout = original_stdout
+                    sys.stderr = original_stderr
 
-            try:
-                # Get temperature
-                temp_dict = fd.get_scalar_field_data(
-                    field_name='temperature',
-                    surfaces=[plane_name],
-                    node_value=True
-                )
-                temp_data = temp_dict[plane_name]
+                # Extract field data
+                print(f"  Extracting field data from '{plane_name}'...")
 
-                # Get pressure
-                press_dict = fd.get_scalar_field_data(
-                    field_name='absolute-pressure',
-                    surfaces=[plane_name],
-                    node_value=True
-                )
-                press_data = press_dict[plane_name]
-
-                # Get velocity components
-                vx_dict = fd.get_scalar_field_data(
-                    field_name='x-velocity',
-                    surfaces=[plane_name],
-                    node_value=True
-                )
-                vx_data = vx_dict[plane_name]
-
-                vy_dict = fd.get_scalar_field_data(
-                    field_name='y-velocity',
-                    surfaces=[plane_name],
-                    node_value=True
-                )
-                vy_data = vy_dict[plane_name]
-
-                vz_dict = fd.get_scalar_field_data(
-                    field_name='z-velocity',
-                    surfaces=[plane_name],
-                    node_value=True
-                )
-                vz_data = vz_dict[plane_name]
-
-                # Get coordinates (only once - same for all sims)
-                if coordinates_data is None:
-                    print(f"  Extracting coordinates (first simulation)...")
-                    x_dict = fd.get_scalar_field_data(
-                        field_name='x-coordinate',
+                try:
+                    # Get temperature
+                    temp_dict = fd.get_scalar_field_data(
+                        field_name='temperature',
                         surfaces=[plane_name],
                         node_value=True
                     )
-                    y_dict = fd.get_scalar_field_data(
-                        field_name='y-coordinate',
+                    temp_data = temp_dict[plane_name]
+
+                    # Get pressure
+                    press_dict = fd.get_scalar_field_data(
+                        field_name='absolute-pressure',
                         surfaces=[plane_name],
                         node_value=True
                     )
-                    z_dict = fd.get_scalar_field_data(
-                        field_name='z-coordinate',
+                    press_data = press_dict[plane_name]
+
+                    # Get velocity components
+                    vx_dict = fd.get_scalar_field_data(
+                        field_name='x-velocity',
                         surfaces=[plane_name],
                         node_value=True
                     )
+                    vx_data = vx_dict[plane_name]
 
-                    x_coords = x_dict[plane_name]
-                    y_coords = y_dict[plane_name]
-                    z_coords = z_dict[plane_name]
+                    vy_dict = fd.get_scalar_field_data(
+                        field_name='y-velocity',
+                        surfaces=[plane_name],
+                        node_value=True
+                    )
+                    vy_data = vy_dict[plane_name]
 
-                    # Stack into (n_points, 3) array
-                    coordinates_data = np.stack([x_coords, y_coords, z_coords], axis=1)
-                    print(f"  Coordinates shape: {coordinates_data.shape}")
+                    vz_dict = fd.get_scalar_field_data(
+                        field_name='z-velocity',
+                        surfaces=[plane_name],
+                        node_value=True
+                    )
+                    vz_data = vz_dict[plane_name]
 
-                # Store results
-                parameters_list.append([cold_vel, hot_vel])
-                temperature_list.append(temp_data)
-                pressure_list.append(press_data)
-                velocity_x_list.append(vx_data)
-                velocity_y_list.append(vy_data)
-                velocity_z_list.append(vz_data)
+                    # Get coordinates (only once - same for all sims)
+                    if coordinates_data is None:
+                        print(f"  Extracting coordinates (first simulation)...")
+                        x_dict = fd.get_scalar_field_data(
+                            field_name='x-coordinate',
+                            surfaces=[plane_name],
+                            node_value=True
+                        )
+                        y_dict = fd.get_scalar_field_data(
+                            field_name='y-coordinate',
+                            surfaces=[plane_name],
+                            node_value=True
+                        )
+                        z_dict = fd.get_scalar_field_data(
+                            field_name='z-coordinate',
+                            surfaces=[plane_name],
+                            node_value=True
+                        )
 
-                print(f"  ✓ Data extracted: {len(temp_data)} points")
+                        x_coords = x_dict[plane_name]
+                        y_coords = y_dict[plane_name]
+                        z_coords = z_dict[plane_name]
 
-            except Exception as e:
-                error_msg = f"Error extracting data: {e}"
-                print(f"  ✗ {error_msg}")
-                raise
+                        # Stack into (n_points, 3) array
+                        coordinates_data = np.stack([x_coords, y_coords, z_coords], axis=1)
+                        print(f"  Coordinates shape: {coordinates_data.shape}")
+
+                    # Store results
+                    parameters_list.append([cold_vel, hot_vel])
+                    temperature_list.append(temp_data)
+                    pressure_list.append(press_data)
+                    velocity_x_list.append(vx_data)
+                    velocity_y_list.append(vy_data)
+                    velocity_z_list.append(vz_data)
+
+                    print(f"  ✓ Data extracted: {len(temp_data)} points")
+
+                except Exception as e:
+                    error_msg = f"Error extracting data: {e}"
+                    print(f"  ✗ {error_msg}")
+                    raise
+
+    except KeyboardInterrupt:
+        cancelled = True
+        print(f"\n\n{'='*70}")
+        print(f"SIMULATION CANCELLED BY USER")
+        print(f"{'='*70}")
+        print(f"\nCompleted {sim_count}/{n_sims} simulations before cancellation")
+        print(f"Cleaning up...")
 
     # Close Fluent
     from fluent_cleanup import end_fluent_session
+    print(f"\n[Cleanup] Closing Fluent...")
     end_fluent_session(solver_session, verbose=False)
 
     if separate_fluent_window:
         fluent_log_file.write("\n" + "="*70 + "\n")
-        fluent_log_file.write("ALL SIMULATIONS COMPLETE\n")
+        if cancelled:
+            fluent_log_file.write("SIMULATIONS CANCELLED BY USER\n")
+        else:
+            fluent_log_file.write("ALL SIMULATIONS COMPLETE\n")
         fluent_log_file.write("="*70 + "\n")
-        fluent_log_file.write(f"Total simulations: {n_sims}\n")
+        fluent_log_file.write(f"Completed simulations: {sim_count}/{n_sims}\n")
         fluent_log_file.write(f"Total time: {(datetime.now() - start_time).total_seconds()/60:.1f} minutes\n")
         fluent_log_file.write(f"\nFluent session closed\n")
         fluent_log_file.flush()
+        fluent_log_file.close()
+
+    # If cancelled, delete the output folder and exit
+    if cancelled:
+        print(f"\n[Cleanup] Deleting incomplete dataset folder...")
+        output_folder = Path(output_file).parent
+        if output_folder.exists() and output_folder.name.startswith('field_surrogate'):
+            import shutil
+            shutil.rmtree(output_folder)
+            print(f"  ✓ Deleted: {output_folder}")
+
+        print(f"\n[Cleanup] Deleting .trn files...")
+        from fluent_cleanup import cleanup_trn_files
+        cleanup_trn_files(Path(output_file).parent.parent, verbose=True)
+
+        print(f"\n{'='*70}")
+        print(f"CLEANUP COMPLETE - All data deleted")
+        print(f"{'='*70}")
+        return  # Exit without saving
 
     # Convert lists to arrays
     print(f"\n[Saving] Converting data to NumPy arrays...")

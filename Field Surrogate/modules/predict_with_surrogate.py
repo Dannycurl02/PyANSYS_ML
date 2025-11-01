@@ -96,9 +96,9 @@ def predict_field(surrogate_dict, cold_vel, hot_vel):
     return field
 
 
-def predict_all_fields(model_dir, cold_vel, hot_vel, coordinates):
+def predict_all_fields(model_dir, cold_vel, hot_vel, target_coordinates):
     """
-    Predict all fields for given parameters.
+    Predict all fields for given parameters and interpolate to target coordinates.
 
     Parameters
     ----------
@@ -108,20 +108,40 @@ def predict_all_fields(model_dir, cold_vel, hot_vel, coordinates):
         Cold inlet velocity
     hot_vel : float
         Hot inlet velocity
-    coordinates : np.ndarray
-        Node coordinates (n_points, 3)
+    target_coordinates : np.ndarray
+        Target node coordinates (n_points, 3) for interpolation
 
     Returns
     -------
     predictions : dict
-        Dictionary of predicted fields
+        Dictionary of predicted fields interpolated to target coordinates
     """
+    from scipy.interpolate import LinearNDInterpolator
+
+    # Load the dataset to get training coordinates
+    dataset_files = list(model_dir.glob("*.npz"))
+    if dataset_files:
+        # Find the main dataset file (not surrogate_*.npz)
+        main_dataset = [f for f in dataset_files if not f.name.startswith('surrogate_')]
+        if main_dataset:
+            data = np.load(main_dataset[0], allow_pickle=True)
+            training_coords = data['coordinates']
+        else:
+            raise ValueError("No main dataset file found in model directory")
+    else:
+        raise ValueError("No dataset files found in model directory")
+
     fields = ['temperature', 'pressure', 'velocity_x', 'velocity_y', 'velocity_z']
 
     predictions = {}
     for field_name in fields:
         surrogate = load_surrogate(model_dir, field_name)
-        predictions[field_name] = predict_field(surrogate, cold_vel, hot_vel)
+        # Get predictions on training coordinates
+        field_values = predict_field(surrogate, cold_vel, hot_vel)
+
+        # Interpolate to target coordinates
+        interpolator = LinearNDInterpolator(training_coords, field_values)
+        predictions[field_name] = interpolator(target_coordinates)
 
     # Calculate velocity magnitude
     vx = predictions['velocity_x']
@@ -223,8 +243,41 @@ def run_fluent_simulation(cold_vel, hot_vel, case_file, plane_name, iterations=2
         Dictionary with field data from Fluent
     """
     import ansys.fluent.core as pyfluent
+    import tempfile
+    import subprocess
+    import sys
 
     print(f"\n  Launching Fluent for ground truth simulation...")
+
+    # Create temp log file for Fluent output
+    fluent_log_file = tempfile.NamedTemporaryFile(
+        mode='w+', suffix='.log', prefix='fluent_validation_', delete=False, buffering=1
+    )
+    fluent_log_path = fluent_log_file.name
+
+    # Write header to Fluent log
+    from datetime import datetime
+    fluent_log_file.write("="*70 + "\n")
+    fluent_log_file.write("FLUENT VALIDATION SIMULATION OUTPUT\n")
+    fluent_log_file.write(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    fluent_log_file.write("="*70 + "\n")
+    fluent_log_file.write(f"Validation Case:\n")
+    fluent_log_file.write(f"  Cold inlet velocity: {cold_vel:.3f} m/s\n")
+    fluent_log_file.write(f"  Hot inlet velocity: {hot_vel:.3f} m/s\n")
+    fluent_log_file.write(f"  Iterations: {iterations}\n")
+    fluent_log_file.write("="*70 + "\n\n")
+    fluent_log_file.flush()
+
+    # Launch PowerShell window to tail the log
+    ps_cmd = f'Get-Content -Path "{fluent_log_path}" -Wait'
+    subprocess.Popen(['powershell', '-NoExit', '-Command', ps_cmd],
+                     creationflags=subprocess.CREATE_NEW_CONSOLE)
+
+    print(f"  Fluent output will appear in separate window...")
+
+    # Save original stdout/stderr
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
 
     # Launch Fluent
     solver = pyfluent.launch_fluent(
@@ -236,36 +289,69 @@ def run_fluent_simulation(cold_vel, hot_vel, case_file, plane_name, iterations=2
 
     # Load case
     print(f"  Reading case file...")
+    sys.stdout = fluent_log_file
+    sys.stderr = fluent_log_file
     solver.settings.file.read_case(file_name=str(case_file))
+    sys.stdout = original_stdout
+    sys.stderr = original_stderr
 
     # Set boundary conditions (using newer syntax)
     print(f"  Setting BCs: Cold={cold_vel:.3f} m/s, Hot={hot_vel:.3f} m/s")
+    sys.stdout = fluent_log_file
+    sys.stderr = fluent_log_file
     solver.settings.setup.boundary_conditions.velocity_inlet["cold-inlet"].momentum.velocity_magnitude.value = float(cold_vel)
     solver.settings.setup.boundary_conditions.velocity_inlet["hot-inlet"].momentum.velocity_magnitude.value = float(hot_vel)
+    sys.stdout = original_stdout
+    sys.stderr = original_stderr
 
     # Solve
     print(f"  Solving ({iterations} iterations)...")
+    print(f"  (Detailed iteration info in separate window)")
+    sys.stdout = fluent_log_file
+    sys.stderr = fluent_log_file
     solver.settings.solution.initialization.initialization_type = "standard"
     solver.settings.solution.initialization.standard_initialize()
     solver.settings.solution.run_calculation.iterate(iter_count=iterations)
+    sys.stdout = original_stdout
+    sys.stderr = original_stderr
 
     # Extract field data
     print(f"  Extracting field data from '{plane_name}'...")
     fd = solver.fields.field_data
 
-    # Using newer get_field_data API
-    temp_dict = fd.get_field_data(field_name='temperature', surfaces=[plane_name])
-    press_dict = fd.get_field_data(field_name='absolute-pressure', surfaces=[plane_name])
-    vx_dict = fd.get_field_data(field_name='x-velocity', surfaces=[plane_name])
-    vy_dict = fd.get_field_data(field_name='y-velocity', surfaces=[plane_name])
-    vz_dict = fd.get_field_data(field_name='z-velocity', surfaces=[plane_name])
+    # Using get_scalar_field_data (deprecated but functional)
+    temp_dict = fd.get_scalar_field_data(field_name='temperature', surfaces=[plane_name], node_value=True)
+    press_dict = fd.get_scalar_field_data(field_name='absolute-pressure', surfaces=[plane_name], node_value=True)
+    vx_dict = fd.get_scalar_field_data(field_name='x-velocity', surfaces=[plane_name], node_value=True)
+    vy_dict = fd.get_scalar_field_data(field_name='y-velocity', surfaces=[plane_name], node_value=True)
+    vz_dict = fd.get_scalar_field_data(field_name='z-velocity', surfaces=[plane_name], node_value=True)
+
+    # Get coordinate data
+    x_dict = fd.get_scalar_field_data(field_name='x-coordinate', surfaces=[plane_name], node_value=True)
+    y_dict = fd.get_scalar_field_data(field_name='y-coordinate', surfaces=[plane_name], node_value=True)
+    z_dict = fd.get_scalar_field_data(field_name='z-coordinate', surfaces=[plane_name], node_value=True)
+
+    # Extract data - check if it's directly an array or has 'scalar-field' key
+    def extract_field_data(field_dict, surface_name):
+        """Extract field data from the returned dictionary."""
+        surface_data = field_dict[surface_name]
+        if isinstance(surface_data, dict) and 'scalar-field' in surface_data:
+            return np.array(surface_data['scalar-field'])
+        else:
+            # Data is already an array
+            return np.array(surface_data)
 
     results = {
-        'temperature': temp_dict[plane_name],
-        'pressure': press_dict[plane_name],
-        'velocity_x': vx_dict[plane_name],
-        'velocity_y': vy_dict[plane_name],
-        'velocity_z': vz_dict[plane_name]
+        'temperature': extract_field_data(temp_dict, plane_name),
+        'pressure': extract_field_data(press_dict, plane_name),
+        'velocity_x': extract_field_data(vx_dict, plane_name),
+        'velocity_y': extract_field_data(vy_dict, plane_name),
+        'velocity_z': extract_field_data(vz_dict, plane_name),
+        'coordinates': np.column_stack([
+            extract_field_data(x_dict, plane_name),
+            extract_field_data(y_dict, plane_name),
+            extract_field_data(z_dict, plane_name)
+        ])
     }
 
     # Calculate velocity magnitude
@@ -275,7 +361,22 @@ def run_fluent_simulation(cold_vel, hot_vel, case_file, plane_name, iterations=2
 
     # Close Fluent
     print(f"  Closing Fluent...")
+    sys.stdout = fluent_log_file
+    sys.stderr = fluent_log_file
     solver.exit()
+    sys.stdout = original_stdout
+    sys.stderr = original_stderr
+
+    # Write completion message to log
+    fluent_log_file.write("\n" + "="*70 + "\n")
+    fluent_log_file.write("VALIDATION SIMULATION COMPLETE\n")
+    fluent_log_file.write("="*70 + "\n")
+    fluent_log_file.write(f"Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    fluent_log_file.write("\nFluent session closed\n")
+    fluent_log_file.flush()
+
+    # Close log file
+    fluent_log_file.close()
 
     return results
 
@@ -390,30 +491,23 @@ if __name__ == "__main__":
     print("="*70)
 
     # Configuration
-    project_dir = Path(__file__).parent
+    project_dir = Path(__file__).parent.parent  # Go up from modules/ to project root
     CASE_FILE = project_dir / "elbow.cas.h5"
     PLANE_NAME = "mid-plane"
     ITERATIONS = 200
 
-    # Find available models
-    models_root = project_dir / "surrogate_models"
-    if not models_root.exists():
-        print("\n✗ No surrogate_models directory found!")
-        print(f"  Expected: {models_root}")
-        print("\nPlease run train_surrogate.py first to train a model.")
-        exit(1)
-
-    # Find model folders (those containing .npz and .h5 files)
+    # Find dataset folders containing trained models
+    # Look for folders that have both dataset .npz and trained model files
     model_dirs = []
-    for subdir in models_root.iterdir():
-        if subdir.is_dir():
+    for item in project_dir.iterdir():
+        if item.is_dir() and not item.name.startswith('.') and item.name != 'modules':
             # Check if it has model files
-            if list(subdir.glob("surrogate_*.npz")) and list(subdir.glob("surrogate_*.h5")):
-                model_dirs.append(subdir)
+            if list(item.glob("surrogate_*.npz")) and list(item.glob("surrogate_*.h5")):
+                model_dirs.append(item)
 
     if not model_dirs:
-        print("\n✗ No trained models found in surrogate_models directory!")
-        print(f"  Directory: {models_root}")
+        print("\n✗ No trained models found!")
+        print(f"  Directory: {project_dir}")
         print("\nPlease run train_surrogate.py first to train a model.")
         exit(1)
 
@@ -476,16 +570,8 @@ if __name__ == "__main__":
         print(f"Validation Case: Cold={cold_vel:.3f} m/s, Hot={hot_vel:.3f} m/s")
         print(f"{'='*70}")
 
-        # Step 1: Get surrogate predictions
-        print(f"\n[1/2] Running Surrogate Prediction...")
-        predictions = predict_all_fields(MODEL_DIR, cold_vel, hot_vel, coordinates)
-        print(f"  ✓ Surrogate prediction complete")
-        print(f"    Temperature: {predictions['temperature'].min():.2f} - {predictions['temperature'].max():.2f} K")
-        print(f"    Pressure: {predictions['pressure'].min():.2f} - {predictions['pressure'].max():.2f} Pa")
-        print(f"    Velocity: {predictions['velocity_magnitude'].min():.4f} - {predictions['velocity_magnitude'].max():.4f} m/s")
-
-        # Step 2: Run Fluent simulation
-        print(f"\n[2/2] Running Fluent Simulation for Ground Truth...")
+        # Step 1: Run Fluent simulation to get ground truth coordinates
+        print(f"\n[1/2] Running Fluent Simulation for Ground Truth...")
         fluent_results = run_fluent_simulation(
             cold_vel=cold_vel,
             hot_vel=hot_vel,
@@ -497,6 +583,16 @@ if __name__ == "__main__":
         print(f"    Temperature: {fluent_results['temperature'].min():.2f} - {fluent_results['temperature'].max():.2f} K")
         print(f"    Pressure: {fluent_results['pressure'].min():.2f} - {fluent_results['pressure'].max():.2f} Pa")
         print(f"    Velocity: {fluent_results['velocity_magnitude'].min():.4f} - {fluent_results['velocity_magnitude'].max():.4f} m/s")
+        print(f"    Coordinates: {fluent_results['coordinates'].shape}")
+
+        # Step 2: Get surrogate predictions using Fluent's coordinates
+        print(f"\n[2/2] Running Surrogate Prediction...")
+        fluent_coords = fluent_results['coordinates']
+        predictions = predict_all_fields(MODEL_DIR, cold_vel, hot_vel, fluent_coords)
+        print(f"  ✓ Surrogate prediction complete")
+        print(f"    Temperature: {predictions['temperature'].min():.2f} - {predictions['temperature'].max():.2f} K")
+        print(f"    Pressure: {predictions['pressure'].min():.2f} - {predictions['pressure'].max():.2f} Pa")
+        print(f"    Velocity: {predictions['velocity_magnitude'].min():.4f} - {predictions['velocity_magnitude'].max():.4f} m/s")
 
         # Step 3: Create comparison plot
         print(f"\n{'='*70}")
@@ -507,7 +603,7 @@ if __name__ == "__main__":
         create_comparison_plot(
             fluent_results=fluent_results,
             predictions=predictions,
-            coordinates=coordinates,
+            coordinates=fluent_coords,
             cold_vel=cold_vel,
             hot_vel=hot_vel,
             save_path=save_path

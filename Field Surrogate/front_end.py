@@ -359,32 +359,72 @@ def run_doe_workflow():
         elif not filename.endswith('.npz'):
             filename += '.npz'
 
-        output_path = config.PROJECT_DIR / filename
+        # Get dataset name (without .npz extension)
+        dataset_name = filename[:-4] if filename.endswith('.npz') else filename
 
-        # Check if file exists
-        if output_path.exists():
-            size_mb = output_path.stat().st_size / (1024 * 1024)
-            print(f"\n⚠️  File already exists: {filename} ({size_mb:.2f} MB)")
-            overwrite = input("Overwrite existing file? [y/N]: ").strip().lower()
+        # Create folder structure: dataset_name/dataset_name.npz
+        dataset_folder = config.PROJECT_DIR / dataset_name
+        output_path = dataset_folder / filename
+
+        # Check if folder or file exists
+        if dataset_folder.exists():
+            # Get folder size
+            folder_size = sum(f.stat().st_size for f in dataset_folder.rglob('*') if f.is_file())
+            size_mb = folder_size / (1024 * 1024)
+            file_count = sum(1 for _ in dataset_folder.rglob('*') if _.is_file())
+
+            print(f"\n⚠️  Dataset folder already exists: {dataset_name}/ ({size_mb:.2f} MB, {file_count} files)")
+            print(f"    This will delete the entire folder and all its contents!")
+            overwrite = input("Overwrite existing folder? [y/N]: ").strip().lower()
             if overwrite != 'y':
                 print("Please enter a different filename.")
                 continue
             else:
-                print(f"✓ Will overwrite {filename}")
+                # Delete the entire folder
+                import shutil
+                print(f"✓ Deleting {dataset_name}/ and all contents...")
+                try:
+                    shutil.rmtree(dataset_folder)
+                except PermissionError:
+                    # If permission error, try to delete files first then folder
+                    for item in dataset_folder.rglob('*'):
+                        if item.is_file():
+                            try:
+                                item.unlink()
+                            except:
+                                pass
+                    # Try removing empty directories
+                    for item in sorted(dataset_folder.rglob('*'), reverse=True):
+                        if item.is_dir():
+                            try:
+                                item.rmdir()
+                            except:
+                                pass
+                    # Finally remove main folder
+                    try:
+                        dataset_folder.rmdir()
+                    except:
+                        pass
+                print(f"✓ Will create new folder: {dataset_name}/{filename}")
                 break
         else:
-            print(f"✓ Will create new file: {filename}")
+            print(f"✓ Will create new file: {dataset_name}/{filename}")
             break
 
     config.OUTPUT_NPZ = filename
+    dataset_folder.mkdir(parents=True, exist_ok=True)
 
     # Run DOE
     print("\n" + "="*70)
     print("[STEP 1] Running DOE Simulations")
     print("="*70)
+    print("\n💡 Press Ctrl+C at any time to cancel and clean up all data\n")
 
     try:
         import auto_fl_matrix
+        dataset_name = config.OUTPUT_NPZ[:-4] if config.OUTPUT_NPZ.endswith('.npz') else config.OUTPUT_NPZ
+        output_file_path = config.PROJECT_DIR / dataset_name / config.OUTPUT_NPZ
+
         auto_fl_matrix.run_doe(
             cold_vel_array=config.COLD_VEL_ARRAY,
             hot_vel_array=config.HOT_VEL_ARRAY,
@@ -393,7 +433,7 @@ def run_doe_workflow():
             fluent_precision=config.FLUENT_PRECISION,
             processor_count=config.PROCESSOR_COUNT,
             iterations=config.ITERATIONS,
-            output_file=config.PROJECT_DIR / config.OUTPUT_NPZ,
+            output_file=output_file_path,
             separate_fluent_window=True  # Redirect Fluent output to separate window
         )
         print("\n✓ DOE simulations completed successfully!")
@@ -407,7 +447,8 @@ def run_doe_workflow():
     print("[STEP 2] Verifying Dataset")
     print("="*70)
 
-    dataset_path = config.PROJECT_DIR / config.OUTPUT_NPZ
+    dataset_name = config.OUTPUT_NPZ[:-4] if config.OUTPUT_NPZ.endswith('.npz') else config.OUTPUT_NPZ
+    dataset_path = config.PROJECT_DIR / dataset_name / config.OUTPUT_NPZ
     if dataset_path.exists():
         size_mb = dataset_path.stat().st_size / (1024 * 1024)
         print(f"  Dataset file: {dataset_path}")
@@ -437,7 +478,15 @@ def inspect_dataset():
     """Inspect and visualize existing datasets."""
     import fluent_output_check
 
-    datasets = list(config.PROJECT_DIR.glob("*.npz"))
+    # Look for NPZ files inside dataset folders
+    datasets = []
+    for item in config.PROJECT_DIR.iterdir():
+        if item.is_dir() and not item.name.startswith('.') and item.name != 'modules':
+            # Look for NPZ files inside this folder
+            npz_files = list(item.glob("*.npz"))
+            if npz_files:
+                # Use the first NPZ file found
+                datasets.append(npz_files[0])
 
     if not datasets:
         print("\n✗ No datasets found in project directory!")
@@ -448,7 +497,9 @@ def inspect_dataset():
     print("\nAvailable datasets:")
     for i, ds in enumerate(datasets, 1):
         size_mb = ds.stat().st_size / (1024 * 1024)
-        print(f"  [{i}] {ds.name} ({size_mb:.2f} MB)")
+        # Show as folder/filename.npz
+        rel_path = ds.relative_to(config.PROJECT_DIR)
+        print(f"  [{i}] {rel_path} ({size_mb:.2f} MB)")
 
     print(f"  [0] Back")
 
@@ -491,17 +542,85 @@ def train_model():
     """Train surrogate model."""
     import train_surrogate
 
+    # Look for NPZ files inside dataset folders
+    datasets = []
+    for item in config.PROJECT_DIR.iterdir():
+        if item.is_dir() and not item.name.startswith('.') and item.name != 'modules':
+            # Look for NPZ files inside this folder
+            npz_files = list(item.glob("*.npz"))
+            if npz_files:
+                # Use the first NPZ file found
+                datasets.append(npz_files[0])
+
+    if not datasets:
+        print_header("TRAIN SURROGATE MODEL")
+        print("\n✗ No datasets found in project directory!")
+        pause()
+        return
+
     print_header("TRAIN SURROGATE MODEL")
-    print("\nLaunching training program...")
-    print("(Follow prompts in training program)")
-    print("="*70)
+    print("\nAvailable datasets:")
+    for i, ds in enumerate(datasets, 1):
+        size_mb = ds.stat().st_size / (1024 * 1024)
+        # Show as folder/filename.npz
+        rel_path = ds.relative_to(config.PROJECT_DIR)
+        print(f"  [{i}] {rel_path} ({size_mb:.2f} MB)")
+
+    print(f"  [0] Back")
+
+    choice = get_choice(len(datasets))
+    if choice == 0:
+        return
+
+    dataset_file = datasets[choice - 1]
+    # Output directory is the parent folder of the NPZ file
+    output_dir = dataset_file.parent
+
+    print(f"\nDataset: {dataset_file.relative_to(config.PROJECT_DIR)}")
+    print(f"Output directory: {output_dir.relative_to(config.PROJECT_DIR)}/")
+    print("\nTraining configuration:")
+    print("  POD modes: 10")
+    print("  Train/Test split: 80/20")
+    print("  Epochs: 500")
+    print("\n" + "="*70)
 
     try:
-        # This will run the interactive training
-        import subprocess
-        subprocess.run([sys.executable, str(config.PROJECT_DIR / "modules" / "train_surrogate.py")])
+        # Train all surrogates
+        print("\nStarting training...")
+        surrogates = train_surrogate.train_all_surrogates(
+            dataset_file=dataset_file,
+            n_modes=10,
+            test_size=0.2,
+            epochs=500
+        )
+
+        # Save models
+        print(f"\n{'='*70}")
+        print("Saving models...")
+        print(f"{'='*70}")
+
+        for field_name, surrogate in surrogates.items():
+            if not field_name.startswith('_'):
+                save_path = output_dir / f"surrogate_{field_name}.npz"
+                surrogate.save(save_path)
+
+        # Generate visualizations
+        print(f"\n{'='*70}")
+        print("Generating visualizations...")
+        print(f"{'='*70}")
+
+        # Random test sample
+        train_surrogate.visualize_predictions(surrogates, sim_index=None, save_dir=output_dir)
+
+        print(f"\n{'='*70}")
+        print("TRAINING COMPLETED SUCCESSFULLY")
+        print(f"{'='*70}")
+        print(f"\nModels saved to: {output_dir}/")
+
     except Exception as e:
-        print(f"\n✗ Error launching training: {e}")
+        print(f"\n✗ Error during training: {e}")
+        import traceback
+        traceback.print_exc()
 
     pause()
 
