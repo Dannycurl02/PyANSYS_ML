@@ -1,6 +1,24 @@
+# Temporary and cache files
 *.trn
-*.png
 .claude/
-/Scalar Surrogate/cache/
+*.bat
+nul
+
+# Python cache
+__pycache__/
 /Field Surrogate/__pycache__/
 /Field Surrogate/modules/__pycache__/
+/Scalar Surrogate/cache/
+
+# Data and output files
+# Images
+*.png
+
+# Model files (ignore H5 Keras models but allow NPZ inside dataset folders)
+*.h5
+
+# Dataset output folders (contains NPZ files, trained models, and visualizations)
+/Field Surrogate/field_surrogate_*/
+
+# Documentation
+/Field Surrogate/context.md

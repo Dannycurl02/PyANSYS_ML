@@ -316,6 +316,16 @@ def train_all_surrogates(dataset_file, n_modes=10, test_size=0.2, epochs=500):
     print(f"  Train samples: {len(train_idx)}")
     print(f"  Test samples: {len(test_idx)}")
 
+    # Adjust n_modes if dataset is too small
+    n_train = len(train_idx)
+    n_features = fields['temperature'].shape[1]
+    max_modes = min(n_train, n_features)
+
+    if n_modes > max_modes:
+        print(f"\n⚠️  WARNING: Requested {n_modes} POD modes but only {n_train} training samples available.")
+        print(f"   Automatically reducing to {max_modes} modes (max possible with this dataset).")
+        n_modes = max_modes
+
     # Train surrogates
     surrogates = {}
 
@@ -391,8 +401,8 @@ def visualize_predictions(surrogates, sim_index=None, save_dir=None):
     # Fields to plot
     fields_to_plot = ['temperature', 'pressure', 'velocity_magnitude']
 
-    # Create figure
-    fig, axes = plt.subplots(len(fields_to_plot), 2, figsize=(14, 5*len(fields_to_plot)))
+    # Create figure with 3 columns: Ground Truth, Prediction, Error
+    fig, axes = plt.subplots(len(fields_to_plot), 3, figsize=(20, 5*len(fields_to_plot)))
 
     for i, field_name in enumerate(fields_to_plot):
         # Get ground truth
@@ -420,13 +430,15 @@ def visualize_predictions(surrogates, sim_index=None, save_dir=None):
                 label = 'Pressure (Pa)'
                 cmap = 'viridis'
 
-        # Calculate error
+        # Calculate error metrics
+        error = pred_field - true_field
         r2 = r2_score(true_field, pred_field)
         mae = mean_absolute_error(true_field, pred_field)
+        rmse = np.sqrt(mean_squared_error(true_field, pred_field))
 
-        # Ground truth plot
+        # Column 1: Ground truth
         ax_true = axes[i, 0] if len(fields_to_plot) > 1 else axes[0]
-        scatter_true = ax_true.scatter(x, y, c=true_field, cmap=cmap, s=15, alpha=0.8, edgecolors='none')
+        scatter_true = ax_true.scatter(x, y, c=true_field, cmap=cmap, s=12, alpha=0.8, edgecolors='none')
         ax_true.set_xlabel('X (m)', fontsize=11)
         ax_true.set_ylabel('Y (m)', fontsize=11)
         ax_true.set_title(f'{field_name.replace("_", " ").title()} - Ground Truth', fontsize=12, fontweight='bold')
@@ -435,9 +447,9 @@ def visualize_predictions(surrogates, sim_index=None, save_dir=None):
         cbar_true = plt.colorbar(scatter_true, ax=ax_true)
         cbar_true.set_label(label, fontsize=10)
 
-        # Prediction plot
+        # Column 2: Prediction
         ax_pred = axes[i, 1] if len(fields_to_plot) > 1 else axes[1]
-        scatter_pred = ax_pred.scatter(x, y, c=pred_field, cmap=cmap, s=15, alpha=0.8, edgecolors='none')
+        scatter_pred = ax_pred.scatter(x, y, c=pred_field, cmap=cmap, s=12, alpha=0.8, edgecolors='none')
         ax_pred.set_xlabel('X (m)', fontsize=11)
         ax_pred.set_ylabel('Y (m)', fontsize=11)
         ax_pred.set_title(
@@ -449,11 +461,29 @@ def visualize_predictions(surrogates, sim_index=None, save_dir=None):
         cbar_pred = plt.colorbar(scatter_pred, ax=ax_pred)
         cbar_pred.set_label(label, fontsize=10)
 
-        # Match color scales
+        # Match color scales for ground truth and prediction
         vmin = min(true_field.min(), pred_field.min())
         vmax = max(true_field.max(), pred_field.max())
         scatter_true.set_clim(vmin, vmax)
         scatter_pred.set_clim(vmin, vmax)
+
+        # Column 3: Error (centered diverging colormap)
+        from matplotlib.colors import TwoSlopeNorm
+        ax_error = axes[i, 2] if len(fields_to_plot) > 1 else axes[2]
+        error_max = max(abs(error.min()), abs(error.max()))
+        norm = TwoSlopeNorm(vmin=-error_max, vcenter=0, vmax=error_max)
+        scatter_error = ax_error.scatter(x, y, c=error, cmap='RdBu_r', s=12, alpha=0.8,
+                                        edgecolors='none', norm=norm)
+        ax_error.set_xlabel('X (m)', fontsize=11)
+        ax_error.set_ylabel('Y (m)', fontsize=11)
+        ax_error.set_title(
+            f'{field_name.replace("_", " ").title()} - Error\n(RMSE={rmse:.4f})',
+            fontsize=12, fontweight='bold'
+        )
+        ax_error.set_aspect('equal')
+        ax_error.grid(True, alpha=0.3)
+        cbar_error = plt.colorbar(scatter_error, ax=ax_error)
+        cbar_error.set_label(f'Error ({label.split("(")[1].split(")")[0]})', fontsize=10)
 
     plt.suptitle(f'Ground Truth vs Prediction (Cold={cold_vel:.2f} m/s, Hot={hot_vel:.2f} m/s)',
                  fontsize=14, fontweight='bold', y=0.995)
@@ -472,9 +502,15 @@ if __name__ == "__main__":
     print("FIELD SURROGATE MODEL TRAINING")
     print("="*70)
 
-    # Find available datasets
-    project_dir = Path(__file__).parent
-    datasets = list(project_dir.glob("*.npz"))
+    # Find available datasets (look inside dataset folders)
+    project_dir = Path(__file__).parent.parent  # Go up from modules/ to project root
+    datasets = []
+    for item in project_dir.iterdir():
+        if item.is_dir() and not item.name.startswith('.') and item.name != 'modules':
+            # Look for NPZ files inside this folder
+            npz_files = list(item.glob("*.npz"))
+            if npz_files:
+                datasets.append(npz_files[0])
 
     if not datasets:
         print("\n✗ No dataset files (.npz) found in the project directory!")
@@ -486,7 +522,8 @@ if __name__ == "__main__":
     print("\nAvailable datasets:")
     for i, dataset in enumerate(datasets, 1):
         size_mb = dataset.stat().st_size / (1024 * 1024)
-        print(f"  [{i}] {dataset.name} ({size_mb:.2f} MB)")
+        rel_path = dataset.relative_to(project_dir)
+        print(f"  [{i}] {rel_path} ({size_mb:.2f} MB)")
 
     # Get user selection
     try:
@@ -499,36 +536,16 @@ if __name__ == "__main__":
         print("\nCancelled by user.")
         exit(1)
 
-    # Create model name from dataset name
-    dataset_name = DATASET_FILE.stem  # e.g., "field_surrogate_dataset"
-    model_name = dataset_name.replace("_dataset", "").replace("field_surrogate", "model")
-    if model_name == "":
-        model_name = "model"
+    # Output directory is the parent folder of the NPZ file
+    OUTPUT_DIR = DATASET_FILE.parent
 
-    # Ask for custom model name
-    print(f"\nDefault model name: {model_name}")
-    custom_name = input("Enter custom model name (or press Enter to use default): ").strip()
-    if custom_name:
-        model_name = custom_name
-
-    # Create model-specific directory
-    OUTPUT_DIR = project_dir / "surrogate_models" / model_name
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Copy dataset to model folder
-    import shutil
-    dataset_copy = OUTPUT_DIR / DATASET_FILE.name
-    if not dataset_copy.exists():
-        print(f"\nCopying dataset to model folder...")
-        shutil.copy2(DATASET_FILE, dataset_copy)
-        print(f"  Copied: {dataset_copy}")
+    print(f"\nOutput directory: {OUTPUT_DIR.relative_to(project_dir)}/")
 
     print(f"\n{'='*70}")
     print(f"Training Configuration")
     print(f"{'='*70}")
-    print(f"  Dataset: {DATASET_FILE.name}")
-    print(f"  Model name: {model_name}")
-    print(f"  Output directory: {OUTPUT_DIR}")
+    print(f"  Dataset: {DATASET_FILE.relative_to(project_dir)}")
+    print(f"  Output directory: {OUTPUT_DIR.relative_to(project_dir)}")
 
     N_MODES = 10
     TEST_SIZE = 0.2

@@ -133,8 +133,10 @@ def visualize_random_simulation(dataset_file, sim_index=None):
 
     plt.tight_layout()
 
-    # Save plot
-    output_dir = Path(dataset_file).parent
+    # Save plot to dataset-named folder
+    dataset_file = Path(dataset_file)
+    output_dir = dataset_file.parent / dataset_file.stem
+    output_dir.mkdir(parents=True, exist_ok=True)
     plot_file = output_dir / f"visualization_sim{sim_index:03d}.png"
     plt.savefig(plot_file, dpi=150, bbox_inches='tight')
     print(f"  ✓ Plot saved: {plot_file}")
@@ -202,7 +204,12 @@ def visualize_all_simulations_grid(dataset_file, field='temperature'):
             sim_idx += 1
 
     plt.tight_layout()
-    output_file = Path(dataset_file).parent / f"all_sims_{field}.png"
+
+    # Save to dataset-named folder
+    dataset_file = Path(dataset_file)
+    output_dir = dataset_file.parent / dataset_file.stem
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / f"all_sims_{field}.png"
     plt.savefig(output_file, dpi=150, bbox_inches='tight')
     print(f"Grid visualization saved: {output_file}")
     plt.show()
