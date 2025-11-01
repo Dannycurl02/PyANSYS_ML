@@ -38,7 +38,7 @@ class Config:
     PLANE_NAME = "mid-plane"
 
     # Output Settings
-    OUTPUT_NPZ = "field_surrogate_dataset.npz"
+    OUTPUT_NPZ = "field_simulation_dataset.npz"
 
 
 # Global config instance
@@ -585,6 +585,10 @@ def train_model():
     print("\n" + "="*70)
 
     try:
+        # Create subfolder for training outputs
+        training_output_dir = output_dir / "training_results"
+        training_output_dir.mkdir(parents=True, exist_ok=True)
+
         # Train all surrogates
         print("\nStarting training...")
         surrogates = train_surrogate.train_all_surrogates(
@@ -609,13 +613,40 @@ def train_model():
         print("Generating visualizations...")
         print(f"{'='*70}")
 
+        # Save performance report
+        print(f"\n[1/5] Performance report...")
+        train_surrogate.save_performance_report(surrogates, save_dir=training_output_dir, dataset_file=dataset_file)
+
+        # Plot training curves
+        print(f"\n[2/5] Training curves...")
+        train_surrogate.plot_training_curves(surrogates, save_dir=training_output_dir)
+
+        # Plot performance metrics
+        print(f"\n[3/5] Performance metrics...")
+        train_surrogate.plot_performance_metrics(surrogates, save_dir=training_output_dir)
+
         # Random test sample
-        train_surrogate.visualize_predictions(surrogates, sim_index=None, save_dir=output_dir)
+        print(f"\n[4/5] Random test sample...")
+        train_surrogate.visualize_predictions(surrogates, sim_index=None, save_dir=training_output_dir)
+
+        # Best and worst predictions
+        print(f"\n[5/5] Best and worst predictions...")
+        test_idx = surrogates['_test_idx']
+        temp_surrogate = surrogates['temperature']
+        best_idx = test_idx[np.argmax(temp_surrogate.test_metrics['r2_per_sample'])]
+        worst_idx = test_idx[np.argmin(temp_surrogate.test_metrics['r2_per_sample'])]
+
+        print(f"\n  Best prediction (highest R²):")
+        train_surrogate.visualize_predictions(surrogates, sim_index=best_idx, save_dir=training_output_dir)
+
+        print(f"\n  Worst prediction (lowest R²):")
+        train_surrogate.visualize_predictions(surrogates, sim_index=worst_idx, save_dir=training_output_dir)
 
         print(f"\n{'='*70}")
         print("TRAINING COMPLETED SUCCESSFULLY")
         print(f"{'='*70}")
         print(f"\nModels saved to: {output_dir}/")
+        print(f"Visualizations saved to: {training_output_dir}/")
 
     except Exception as e:
         print(f"\n✗ Error during training: {e}")
