@@ -412,7 +412,7 @@ def create_comparison_plot(fluent_results, predictions, coordinates, cold_vel, h
     cmaps = ['hot', 'viridis', 'plasma']
 
     # Create 3x3 subplot
-    fig, axes = plt.subplots(3, 3, figsize=(18, 15))
+    fig, axes = plt.subplots(3, 3, figsize=(18, 21))
 
     for row, (field, label, cmap) in enumerate(zip(fields, labels, cmaps)):
         # Get data

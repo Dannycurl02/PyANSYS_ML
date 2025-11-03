@@ -2,12 +2,15 @@
 *.trn
 .claude/
 *.bat
+*.log
 nul
 
 # Python cache
 __pycache__/
 /Field Surrogate/__pycache__/
 /Field Surrogate/modules/__pycache__/
+/Volume Surrogate/__pycache__/
+/Volume Surrogate/modules/__pycache__/
 /Scalar Surrogate/cache/
 
 # Data and output files
@@ -19,6 +22,10 @@ __pycache__/
 
 # Dataset output folders (contains NPZ files, trained models, and visualizations)
 /Field Surrogate/field_surrogate_*/
+/Volume Surrogate/volume_surrogate_*/
+/Volume Surrogate/test_volume_data.npz
+/Volume Surrogate/test_volume_temperature_3d.png
 
 # Documentation
 /Field Surrogate/context.md
+/Volume Surrogate/context.md

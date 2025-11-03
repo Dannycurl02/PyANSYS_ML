@@ -761,7 +761,7 @@ def visualize_predictions(surrogates, sim_index=None, save_dir=None):
     fields_to_plot = ['temperature', 'pressure', 'velocity_magnitude']
 
     # Create figure with 3 columns: Ground Truth, Prediction, Error
-    fig, axes = plt.subplots(len(fields_to_plot), 3, figsize=(20, 5*len(fields_to_plot)))
+    fig, axes = plt.subplots(len(fields_to_plot), 3, figsize=(20, 7*len(fields_to_plot)))
 
     for i, field_name in enumerate(fields_to_plot):
         # Get ground truth
