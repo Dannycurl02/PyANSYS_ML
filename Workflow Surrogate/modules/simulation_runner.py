@@ -1,0 +1,764 @@
+"""
+Simulation Runner Module
+=========================
+Handles running Fluent simulations for all DOE combinations and saving results.
+"""
+
+import numpy as np
+from pathlib import Path
+import json
+import itertools
+import time
+import sys
+from io import StringIO
+
+
+def run_simulations_menu(solver, setup_data, analysis, dataset_dir, ui_helpers):
+    """
+    Menu for running Fluent simulations for all DOE combinations.
+
+    Parameters
+    ----------
+    solver : PyFluent solver
+        Active Fluent solver instance
+    setup_data : dict
+        Model setup configuration
+    analysis : dict
+        Dimensional analysis
+    dataset_dir : Path
+        Dataset directory path
+    ui_helpers : module
+        UI helpers module
+    """
+    if not solver:
+        ui_helpers.print_header("RUN SIMULATIONS")
+        print("\n✗ No active Fluent session! Please open a case file first.")
+        ui_helpers.pause()
+        return
+
+    outputs_dir = dataset_dir / "outputs"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    while True:
+        ui_helpers.clear_screen()
+        ui_helpers.print_header("RUN SIMULATIONS")
+
+        print(f"\nDataset Directory: {dataset_dir}")
+        print(f"Total Simulations Required: {analysis['total_input_combinations']}")
+
+        # Count existing simulation results
+        existing_results = list(outputs_dir.glob("sim_*.npz"))
+        print(f"Completed Simulations: {len(existing_results)}")
+
+        completeness = len(existing_results) / analysis['total_input_combinations'] * 100 if analysis['total_input_combinations'] > 0 else 0
+        print(f"Progress: {completeness:.1f}%")
+
+        print(f"\n{'='*70}")
+        print("  [1] Run Single Simulation (Manual)")
+        print("  [2] Run All Simulations (Batch)")
+        print("  [3] Run Remaining Simulations")
+        print("  [4] View Simulation Status")
+        print("  [5] Extract Data from Current Solution")
+        print("  [0] Back")
+        print("="*70)
+
+        choice = ui_helpers.get_choice(5)
+
+        if choice == 0:
+            return
+        elif choice == 1:
+            run_single_simulation(solver, setup_data, dataset_dir, ui_helpers)
+        elif choice == 2:
+            run_batch_simulations(solver, setup_data, analysis, dataset_dir, ui_helpers)
+        elif choice == 3:
+            run_remaining_simulations(solver, setup_data, analysis, dataset_dir, existing_results, ui_helpers)
+        elif choice == 4:
+            view_simulation_status(analysis, existing_results, ui_helpers)
+        elif choice == 5:
+            extract_current_solution(solver, setup_data, dataset_dir, ui_helpers)
+
+
+def generate_doe_combinations(setup_data):
+    """
+    Generate all DOE combinations from setup data.
+
+    Parameters
+    ----------
+    setup_data : dict
+        Model setup configuration
+
+    Returns
+    -------
+    list
+        List of tuples, each containing (sim_id, bc_values_dict)
+    """
+    doe_config = setup_data.get('doe_configuration', {})
+
+    # Build parameter arrays and mapping
+    param_arrays = []
+    param_mapping = []  # List of (bc_name, bc_type, param_name, param_path)
+
+    for input_item in setup_data['model_inputs']:
+        bc_name = input_item['name']
+        bc_type = input_item['category']
+        doe_params = doe_config.get(bc_name, {})
+
+        for param_name, param_values in doe_params.items():
+            if param_values:
+                param_arrays.append(param_values)
+                # Store the parameter path for applying BCs
+                param_mapping.append({
+                    'bc_name': bc_name,
+                    'bc_type': bc_type,
+                    'param_name': param_name,
+                    'param_path': param_name  # Full path like 'vmag' or 'temperature'
+                })
+
+    if not param_arrays:
+        return []
+
+    # Generate all combinations
+    combinations = list(itertools.product(*param_arrays))
+
+    # Create list of (sim_id, bc_values_dict)
+    doe_list = []
+    for sim_id, combo in enumerate(combinations, 1):
+        bc_values = {}
+        for param_info, value in zip(param_mapping, combo):
+            bc_key = f"{param_info['bc_name']}|{param_info['param_name']}"
+            bc_values[bc_key] = {
+                'bc_name': param_info['bc_name'],
+                'bc_type': param_info['bc_type'],
+                'param_name': param_info['param_name'],
+                'param_path': param_info['param_path'],
+                'value': value
+            }
+        doe_list.append((sim_id, bc_values))
+
+    return doe_list
+
+
+def apply_boundary_conditions(solver, bc_values):
+    """
+    Apply boundary conditions to Fluent solver.
+
+    Parameters
+    ----------
+    solver : PyFluent solver
+        Active Fluent solver instance
+    bc_values : dict
+        Dictionary of BC values to apply
+
+    Returns
+    -------
+    bool
+        True if successful, False otherwise
+    """
+    try:
+        boundary_conditions = solver.settings.setup.boundary_conditions
+
+        for bc_key, bc_info in bc_values.items():
+            bc_name = bc_info['bc_name']
+            bc_type = bc_info['bc_type'].lower().replace(' ', '_')
+            param_path = bc_info['param_path']
+            value = bc_info['value']
+
+            # Get the BC object
+            if hasattr(boundary_conditions, bc_type):
+                bc_container = getattr(boundary_conditions, bc_type)
+                if bc_name in bc_container:
+                    bc_obj = bc_container[bc_name]
+
+                    # Navigate to parameter using path
+                    try:
+                        # Handle nested paths (e.g., 'momentum.velocity.vmag')
+                        path_parts = param_path.split('.')
+                        target_obj = bc_obj
+                        for part in path_parts[:-1]:
+                            if hasattr(target_obj, part):
+                                target_obj = getattr(target_obj, part)
+                            else:
+                                print(f"  ⚠ Warning: Path '{part}' not found in {bc_name}")
+                                break
+
+                        # Set the final parameter
+                        final_param = path_parts[-1]
+                        if hasattr(target_obj, final_param):
+                            param_obj = getattr(target_obj, final_param)
+                            if hasattr(param_obj, 'set_state'):
+                                param_obj.set_state(value)
+                            else:
+                                setattr(target_obj, final_param, value)
+                            print(f"  ✓ Set {bc_name}.{param_path} = {value}")
+                        else:
+                            print(f"  ⚠ Warning: Parameter '{final_param}' not found in {bc_name}")
+
+                    except Exception as e:
+                        print(f"  ✗ Error setting {bc_name}.{param_path}: {e}")
+                        return False
+
+        return True
+
+    except Exception as e:
+        print(f"\n✗ Error applying boundary conditions: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def extract_field_data(solver, setup_data, dataset_dir):
+    """
+    Extract field data from configured output locations.
+
+    Parameters
+    ----------
+    solver : PyFluent solver
+        Active Fluent solver instance
+    setup_data : dict
+        Model setup configuration
+    dataset_dir : Path
+        Dataset directory path
+
+    Returns
+    -------
+    dict or None
+        Dictionary containing extracted data, or None if error
+    """
+    try:
+        # Load output parameters configuration
+        output_params_file = dataset_dir / "output_parameters.json"
+        if not output_params_file.exists():
+            print("\n✗ output_parameters.json not found!")
+            print("  Please configure output parameters in I/O Setup menu.")
+            return None
+
+        with open(output_params_file, 'r') as f:
+            output_params = json.load(f)
+
+        output_data = {}
+
+        # Extract data from each configured output
+        for output_item in setup_data['model_outputs']:
+            output_name = output_item['name']
+            output_type = output_item['category']
+
+            # Get configured parameters for this output
+            params_to_extract = output_params.get(output_name, [])
+            if not params_to_extract:
+                print(f"  ⚠ Warning: No parameters configured for {output_name}, skipping")
+                continue
+
+            print(f"  Extracting from {output_name} ({output_type})...")
+
+            # Extract each parameter
+            for param_name in params_to_extract:
+                try:
+                    # Use PyFluent field data API to get field values
+                    field_data = solver.fields.field_data
+
+                    # Get scalar field data for this surface/zone
+                    data = field_data.get_scalar_field_data(
+                        field_name=param_name,
+                        surfaces=[output_name]
+                    )
+
+                    # Store the data
+                    key = f"{output_name}|{param_name}"
+                    output_data[key] = np.array(data)
+                    print(f"    ✓ {param_name}: {len(data)} points")
+
+                except Exception as e:
+                    print(f"    ✗ Error extracting {param_name}: {e}")
+                    # Try alternative method
+                    try:
+                        # Get surface data using alternative API
+                        data = field_data.get_surface_data(
+                            surface_name=output_name,
+                            field_name=param_name
+                        )
+                        key = f"{output_name}|{param_name}"
+                        output_data[key] = np.array(data)
+                        print(f"    ✓ {param_name}: {len(data)} points (alternative method)")
+                    except:
+                        print(f"    ✗ Failed to extract {param_name} from {output_name}")
+
+        return output_data if output_data else None
+
+    except Exception as e:
+        print(f"\n✗ Error extracting field data: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def run_single_simulation(solver, setup_data, dataset_dir, ui_helpers):
+    """Run a single simulation with manual or CSV input."""
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("RUN SINGLE SIMULATION")
+
+    # Generate DOE combinations
+    doe_list = generate_doe_combinations(setup_data)
+    if not doe_list:
+        print("\n✗ No DOE combinations found!")
+        print("  Please configure DOE parameters first.")
+        ui_helpers.pause()
+        return
+
+    print(f"\nTotal available simulations: {len(doe_list)}")
+
+    # Ask for simulation ID
+    sim_id_str = input("\nEnter simulation ID to run (1-{}): ".format(len(doe_list))).strip()
+
+    if not sim_id_str.isdigit():
+        print("✗ Invalid simulation ID")
+        ui_helpers.pause()
+        return
+
+    sim_id = int(sim_id_str)
+    if sim_id < 1 or sim_id > len(doe_list):
+        print(f"✗ Simulation ID must be between 1 and {len(doe_list)}")
+        ui_helpers.pause()
+        return
+
+    # Get the BC values for this simulation
+    _, bc_values = doe_list[sim_id - 1]
+
+    print(f"\n{'='*70}")
+    print(f"SIMULATION {sim_id}")
+    print("="*70)
+    print("\nBoundary Conditions to Apply:")
+    for bc_key, bc_info in bc_values.items():
+        print(f"  {bc_info['bc_name']}.{bc_info['param_name']} = {bc_info['value']}")
+
+    confirm = input("\nProceed with this simulation? [y/N]: ").strip().lower()
+    if confirm != 'y':
+        print("\n✗ Cancelled")
+        ui_helpers.pause()
+        return
+
+    # Run the simulation
+    print(f"\n{'='*70}")
+    print("RUNNING SIMULATION")
+    print("="*70)
+
+    # Step 1: Apply BCs
+    print("\n[1/4] Applying boundary conditions...")
+    if not apply_boundary_conditions(solver, bc_values):
+        print("\n✗ Failed to apply boundary conditions")
+        ui_helpers.pause()
+        return
+
+    # Step 2: Initialize
+    print("\n[2/4] Initializing solution...")
+    try:
+        # Suppress Fluent output
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = StringIO()
+        sys.stderr = StringIO()
+
+        solver.settings.solution.initialization.hybrid_initialize()
+
+        # Restore output
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        print("  ✓ Initialized")
+    except Exception as e:
+        # Restore output on error
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        print(f"  ✗ Initialization error: {e}")
+        ui_helpers.pause()
+        return
+
+    # Step 3: Solve
+    print("\n[3/4] Running solution...")
+    try:
+        # Get number of iterations from user
+        iterations_str = input("  Enter number of iterations [100]: ").strip() or "100"
+        iterations = int(iterations_str)
+
+        print(f"  Running {iterations} iterations...")
+
+        # Suppress Fluent output during solve
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = StringIO()
+        sys.stderr = StringIO()
+
+        solver.settings.solution.run_calculation.iterate(iter_count=iterations)
+
+        # Restore output
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        print("  ✓ Solution complete")
+    except Exception as e:
+        # Restore output on error
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        print(f"  ✗ Solution error: {e}")
+        ui_helpers.pause()
+        return
+
+    # Step 4: Extract data
+    print("\n[4/4] Extracting field data...")
+    output_data = extract_field_data(solver, setup_data, dataset_dir)
+    if output_data is None:
+        print("\n✗ Failed to extract field data")
+        ui_helpers.pause()
+        return
+
+    # Save results
+    output_file = dataset_dir / "outputs" / f"sim_{sim_id:04d}.npz"
+    np.savez_compressed(output_file, **output_data)
+    print(f"\n✓ Results saved to: {output_file.name}")
+    print(f"  Fields saved: {len(output_data)}")
+
+    ui_helpers.pause()
+
+
+def run_batch_simulations(solver, setup_data, analysis, dataset_dir, ui_helpers):
+    """Run all simulations in batch mode."""
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("RUN BATCH SIMULATIONS")
+
+    # Generate DOE combinations
+    doe_list = generate_doe_combinations(setup_data)
+    if not doe_list:
+        print("\n✗ No DOE combinations found!")
+        ui_helpers.pause()
+        return
+
+    total_sims = len(doe_list)
+    print(f"\nTotal simulations: {total_sims}")
+
+    # Get simulation parameters
+    print("\nSimulation Parameters:")
+    iterations_str = input("  Iterations per simulation [100]: ").strip() or "100"
+    iterations = int(iterations_str)
+
+    save_interval_str = input("  Save progress every N simulations [10]: ").strip() or "10"
+    save_interval = int(save_interval_str)
+
+    confirm = input(f"\nRun {total_sims} simulations? [y/N]: ").strip().lower()
+    if confirm != 'y':
+        print("\n✗ Cancelled")
+        ui_helpers.pause()
+        return
+
+    # Run all simulations
+    print(f"\n{'='*70}")
+    print("BATCH SIMULATION")
+    print("="*70)
+
+    outputs_dir = dataset_dir / "outputs"
+    outputs_dir.mkdir(exist_ok=True)
+
+    start_time = time.time()
+    successful = 0
+    failed = 0
+
+    for sim_id, bc_values in doe_list:
+        # Check if simulation already exists
+        output_file = outputs_dir / f"sim_{sim_id:04d}.npz"
+        if output_file.exists():
+            print(f"\n[{sim_id}/{total_sims}] Skipping (already exists)")
+            successful += 1
+            continue
+
+        print(f"\n{'='*70}")
+        print(f"[{sim_id}/{total_sims}] Simulation {sim_id}")
+        print("="*70)
+
+        # Apply BCs
+        print("Applying BCs...")
+        if not apply_boundary_conditions(solver, bc_values):
+            print("✗ Failed to apply BCs")
+            failed += 1
+            continue
+
+        # Initialize
+        try:
+            # Suppress Fluent output
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            sys.stdout = StringIO()
+            sys.stderr = StringIO()
+
+            solver.settings.solution.initialization.hybrid_initialize()
+
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+        except Exception as e:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            print(f"✗ Initialization failed: {e}")
+            failed += 1
+            continue
+
+        # Solve
+        try:
+            # Suppress Fluent output
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            sys.stdout = StringIO()
+            sys.stderr = StringIO()
+
+            solver.settings.solution.run_calculation.iterate(iter_count=iterations)
+
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+        except Exception as e:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            print(f"✗ Solution failed: {e}")
+            failed += 1
+            continue
+
+        # Extract data
+        output_data = extract_field_data(solver, setup_data, dataset_dir)
+        if output_data is None:
+            print("✗ Data extraction failed")
+            failed += 1
+            continue
+
+        # Save
+        try:
+            np.savez_compressed(output_file, **output_data)
+            print(f"✓ Saved {output_file.name}")
+            successful += 1
+        except Exception as e:
+            print(f"✗ Save failed: {e}")
+            failed += 1
+            continue
+
+        # Progress update
+        elapsed = time.time() - start_time
+        avg_time = elapsed / sim_id
+        remaining = (total_sims - sim_id) * avg_time
+        print(f"\nProgress: {successful}/{total_sims} complete, {failed} failed")
+        print(f"Time: {elapsed/60:.1f}m elapsed, ~{remaining/60:.1f}m remaining")
+
+    # Final summary
+    print(f"\n{'='*70}")
+    print("BATCH SIMULATION COMPLETE")
+    print("="*70)
+    print(f"  Successful: {successful}/{total_sims}")
+    print(f"  Failed: {failed}/{total_sims}")
+    print(f"  Total time: {(time.time() - start_time)/60:.1f} minutes")
+
+    ui_helpers.pause()
+
+
+def run_remaining_simulations(solver, setup_data, analysis, dataset_dir, existing_results, ui_helpers):
+    """Run only the simulations that haven't been completed yet."""
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("RUN REMAINING SIMULATIONS")
+
+    # Generate DOE combinations
+    doe_list = generate_doe_combinations(setup_data)
+    if not doe_list:
+        print("\n✗ No DOE combinations found!")
+        ui_helpers.pause()
+        return
+
+    # Find completed simulation IDs
+    completed_ids = set()
+    for result_file in existing_results:
+        try:
+            sim_id = int(result_file.stem.split('_')[1])
+            completed_ids.add(sim_id)
+        except:
+            pass
+
+    # Filter to only remaining
+    remaining_doe = [(sim_id, bc_vals) for sim_id, bc_vals in doe_list if sim_id not in completed_ids]
+
+    if not remaining_doe:
+        print("\n✓ All simulations complete!")
+        ui_helpers.pause()
+        return
+
+    total_sims = len(remaining_doe)
+    print(f"\nRemaining simulations: {total_sims}")
+    print(f"Completed: {len(completed_ids)}")
+
+    # Get simulation parameters
+    print("\nSimulation Parameters:")
+    iterations_str = input("  Iterations per simulation [100]: ").strip() or "100"
+    iterations = int(iterations_str)
+
+    confirm = input(f"\nRun {total_sims} remaining simulations? [y/N]: ").strip().lower()
+    if confirm != 'y':
+        print("\n✗ Cancelled")
+        ui_helpers.pause()
+        return
+
+    # Run remaining simulations
+    print(f"\n{'='*70}")
+    print("RESUMING BATCH SIMULATION")
+    print("="*70)
+
+    outputs_dir = dataset_dir / "outputs"
+    start_time = time.time()
+    successful = 0
+    failed = 0
+
+    for idx, (sim_id, bc_values) in enumerate(remaining_doe, 1):
+        print(f"\n{'='*70}")
+        print(f"[{idx}/{total_sims}] Simulation {sim_id}")
+        print("="*70)
+
+        # Apply BCs
+        print("Applying BCs...")
+        if not apply_boundary_conditions(solver, bc_values):
+            print("✗ Failed to apply BCs")
+            failed += 1
+            continue
+
+        # Initialize
+        try:
+            # Suppress Fluent output
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            sys.stdout = StringIO()
+            sys.stderr = StringIO()
+
+            solver.settings.solution.initialization.hybrid_initialize()
+
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+        except Exception as e:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            print(f"✗ Initialization failed: {e}")
+            failed += 1
+            continue
+
+        # Solve
+        try:
+            # Suppress Fluent output
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            sys.stdout = StringIO()
+            sys.stderr = StringIO()
+
+            solver.settings.solution.run_calculation.iterate(iter_count=iterations)
+
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+        except Exception as e:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            print(f"✗ Solution failed: {e}")
+            failed += 1
+            continue
+
+        # Extract data
+        output_data = extract_field_data(solver, setup_data, dataset_dir)
+        if output_data is None:
+            print("✗ Data extraction failed")
+            failed += 1
+            continue
+
+        # Save
+        try:
+            output_file = outputs_dir / f"sim_{sim_id:04d}.npz"
+            np.savez_compressed(output_file, **output_data)
+            print(f"✓ Saved {output_file.name}")
+            successful += 1
+        except Exception as e:
+            print(f"✗ Save failed: {e}")
+            failed += 1
+            continue
+
+        # Progress update
+        elapsed = time.time() - start_time
+        avg_time = elapsed / idx
+        remaining_time = (total_sims - idx) * avg_time
+        print(f"\nProgress: {successful}/{total_sims} complete, {failed} failed")
+        print(f"Time: {elapsed/60:.1f}m elapsed, ~{remaining_time/60:.1f}m remaining")
+
+    # Final summary
+    print(f"\n{'='*70}")
+    print("REMAINING SIMULATIONS COMPLETE")
+    print("="*70)
+    print(f"  Successful: {successful}/{total_sims}")
+    print(f"  Failed: {failed}/{total_sims}")
+    print(f"  Total time: {(time.time() - start_time)/60:.1f} minutes")
+
+    ui_helpers.pause()
+
+
+def view_simulation_status(analysis, existing_results, ui_helpers):
+    """Display detailed simulation status."""
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("SIMULATION STATUS")
+
+    print(f"\nTotal Required: {analysis['total_input_combinations']}")
+    print(f"Completed: {len(existing_results)}")
+    print(f"Remaining: {analysis['total_input_combinations'] - len(existing_results)}")
+
+    completeness = len(existing_results) / analysis['total_input_combinations'] * 100 if analysis['total_input_combinations'] > 0 else 0
+    print(f"\nProgress: {completeness:.1f}%")
+
+    # Show completed simulation IDs
+    if existing_results:
+        print("\nCompleted Simulations:")
+        sim_ids = sorted([int(f.stem.split('_')[1]) for f in existing_results])
+        print(f"  IDs: {sim_ids[:20]}{'...' if len(sim_ids) > 20 else ''}")
+
+        # Show file sizes
+        total_size = sum(f.stat().st_size for f in existing_results)
+        avg_size = total_size / len(existing_results)
+        print(f"\n  Total data size: {total_size / 1024**2:.1f} MB")
+        print(f"  Average per simulation: {avg_size / 1024**2:.1f} MB")
+
+    ui_helpers.pause()
+
+
+def extract_current_solution(solver, setup_data, dataset_dir, ui_helpers):
+    """Extract data from the currently loaded solution."""
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("EXTRACT CURRENT SOLUTION")
+
+    try:
+        sim_id = input("\nEnter simulation ID for this solution: ").strip()
+
+        if not sim_id.isdigit():
+            print("✗ Invalid simulation ID")
+            ui_helpers.pause()
+            return
+
+        sim_id_int = int(sim_id)
+
+        print(f"\n{'='*70}")
+        print(f"EXTRACTING SIMULATION {sim_id_int}")
+        print("="*70)
+
+        # Extract field data
+        print("\nExtracting field data...")
+        output_data = extract_field_data(solver, setup_data, dataset_dir)
+
+        if output_data is None:
+            print("\n✗ Failed to extract field data")
+            ui_helpers.pause()
+            return
+
+        # Save results
+        outputs_dir = dataset_dir / "outputs"
+        outputs_dir.mkdir(exist_ok=True)
+        output_file = outputs_dir / f"sim_{sim_id_int:04d}.npz"
+
+        np.savez_compressed(output_file, **output_data)
+
+        print(f"\n✓ Results saved to: {output_file.name}")
+        print(f"  Fields saved: {len(output_data)}")
+        print(f"  File size: {output_file.stat().st_size / 1024:.1f} KB")
+
+    except Exception as e:
+        print(f"\n✗ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+    ui_helpers.pause()

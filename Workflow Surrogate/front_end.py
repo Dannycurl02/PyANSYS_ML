@@ -2,17 +2,26 @@
 """
 Workflow Surrogate - Interactive Fluent Integration
 ====================================================
-Customizable workflow for connecting to Fluent, selecting surfaces/volumes,
-and setting up POD-based surrogate models.
+Complete workflow for POD-based surrogate model creation from CFD data.
 """
 
 import sys
 import json
 from pathlib import Path
-from tkinter import Tk, filedialog
 
 # Add modules to path
 sys.path.insert(0, str(Path(__file__).parent / "modules"))
+
+# Import modules
+from modules import ui_helpers
+from modules import user_settings as us
+from modules import fluent_interface as fi
+from modules import project_manager as pm
+from modules import output_parameters as op
+from modules import simulation_runner as sr
+from modules import model_trainer as mt
+from modules import data_visualizer as dv
+from modules import project_system as ps
 
 # ============================================================
 # CONFIGURATION
@@ -21,1248 +30,724 @@ sys.path.insert(0, str(Path(__file__).parent / "modules"))
 PROJECT_DIR = Path(__file__).parent
 CONFIG_FILE = PROJECT_DIR / "user_settings.json"
 
-
-class UserSettings:
-    """Manager for user settings and preferences."""
-
-    def __init__(self, config_file):
-        self.config_file = config_file
-        self.data = self.load()
-
-    def load(self):
-        """Load settings from config file."""
-        if self.config_file.exists():
-            try:
-                with open(self.config_file, 'r') as f:
-                    return json.load(f)
-            except:
-                return self._default_settings()
-        return self._default_settings()
-
-    def _default_settings(self):
-        """Return default settings structure."""
-        return {
-            'recent_projects': [],
-            'solver_settings': {
-                'precision': 'single',
-                'processor_count': 2,
-                'dimension': 3,
-                'use_gui': True
-            }
-        }
-
-    def save(self):
-        """Save settings to config file."""
-        with open(self.config_file, 'w') as f:
-            json.dump(self.data, f, indent=2)
-
-    def add_recent_project(self, project_path):
-        """Add a project to recent list (most recent first)."""
-        project_path = str(project_path)
-
-        # Remove if already exists
-        if project_path in self.data['recent_projects']:
-            self.data['recent_projects'].remove(project_path)
-
-        # Add to front
-        self.data['recent_projects'].insert(0, project_path)
-
-        # Keep only 3 most recent
-        self.data['recent_projects'] = self.data['recent_projects'][:3]
-
-        self.save()
-
-    def get_recent_projects(self):
-        """Get list of 3 most recent projects."""
-        return [p for p in self.data['recent_projects'] if Path(p).exists()]
-
-    def get_solver_settings(self):
-        """Get saved solver settings."""
-        return self.data['solver_settings'].copy()
-
-    def save_solver_settings(self, settings):
-        """Save solver settings."""
-        self.data['solver_settings'] = settings
-        self.save()
-
-
-user_settings = UserSettings(CONFIG_FILE)
+# Initialize user settings
+user_settings = us.UserSettings(CONFIG_FILE)
 
 
 # ============================================================
-# TUI UTILITIES
+# PROJECT OPENING MENU
 # ============================================================
 
-def clear_screen():
-    """Clear the terminal screen."""
-    import os
-    os.system('cls' if os.name == 'nt' else 'clear')
-
-
-def print_header(title):
-    """Print a formatted header."""
-    print("\n" + "="*70)
-    print(title.center(70))
-    print("="*70)
-
-
-def print_menu(title, options):
-    """Print a menu with options."""
-    print_header(title)
-    for i, option in enumerate(options, 1):
-        print(f"  [{i}] {option}")
-    print(f"  [0] {'Back' if title != 'WORKFLOW SURROGATE - MAIN MENU' else 'Exit'}")
-    print("="*70)
-
-
-def get_choice(max_choice):
-    """Get user choice with validation."""
+def project_opening_menu():
+    """
+    Menu for opening or creating projects.
+    Returns the opened/created project.
+    """
     while True:
-        try:
-            choice = int(input("\nEnter choice: ").strip())
-            if 0 <= choice <= max_choice:
-                return choice
-            print(f"Invalid choice. Please enter 0-{max_choice}")
-        except ValueError:
-            print("Invalid input. Please enter a number.")
-        except KeyboardInterrupt:
-            print("\n\nExiting...")
+        ui_helpers.clear_screen()
+        ui_helpers.print_header("WORKFLOW SURROGATE - PROJECT SELECTION")
+
+        # Show recent project folders only
+        recent_project_folders = user_settings.get_recent_project_folders()
+
+        print("\n  [1] Create New Project")
+        print("  [2] Open Existing Project (Browse)")
+
+        if recent_project_folders:
+            print("\n  Recent Projects:")
+            for i, project_path in enumerate(recent_project_folders[:5], 3):  # Show max 5
+                project_path = Path(project_path)
+                print(f"  [{i}] {project_path.name}")
+
+        print(f"\n  [0] Exit")
+        print("="*70)
+
+        max_choice = 2 + min(len(recent_project_folders), 5)
+        choice = ui_helpers.get_choice(max_choice)
+
+        if choice == 0:
+            print("\nGoodbye!")
             sys.exit(0)
 
+        elif choice == 1:
+            # Create new project
+            project = ps.create_new_project(ui_helpers)
+            if project:
+                # Add to recent project folders
+                user_settings.add_recent_project_folder(project.project_path)
+                return project
 
-def pause():
-    """Pause and wait for user input."""
-    input("\nPress Enter to continue...")
+        elif choice == 2:
+            # Open existing project
+            project = ps.open_existing_project(ui_helpers)
+            if project:
+                # Add to recent project folders
+                user_settings.add_recent_project_folder(project.project_path)
+                return project
+
+        elif 3 <= choice <= max_choice:
+            # Open recent project
+            project_idx = choice - 3
+            project_path = recent_project_folders[project_idx]
+            project = ps.open_recent_project(project_path, ui_helpers)
+            if project:
+                # Move to top of recent project folders
+                user_settings.add_recent_project_folder(project.project_path)
+                return project
 
 
 # ============================================================
-# FLUENT CONNECTION
+# PROJECT MAIN MENU
 # ============================================================
 
-def configure_solver_settings():
+def project_main_menu(project):
     """
-    Configure Fluent solver settings before launch.
+    Main menu for an opened project.
+    Displays project status and provides access to all workflows.
+    """
+    while True:
+        # Refresh project scan
+        project.scan()
 
-    Returns
-    -------
-    dict or None
-        Solver settings dict, or None if cancelled
+        ui_helpers.clear_screen()
+        ui_helpers.print_header(f"PROJECT: {project.info['project_name']}")
+
+        # Display project status bar
+        print("\n" + "="*70)
+        print("PROJECT STATUS:")
+        print("="*70)
+        print(f"  Location: {project.project_path}")
+        print(f"  Created: {project.info['created']}")
+        print(f"\n  Simulation Setups: {len(project.datasets)}")
+        if project.datasets:
+            for dataset in project.datasets:
+                status = f"{dataset['completeness']:.0f}% complete"
+                print(f"    - {dataset['name']:30s} [{status}]")
+        else:
+            print("    (none)")
+
+        print(f"\n  Trained Models: {len(project.models)}")
+        if project.models:
+            for model in project.models:
+                latent_info = model.get('latent_size', model.get('pod_modes', 'N/A'))
+                print(f"    - {model['name']:30s} [Latent: {latent_info}]")
+        else:
+            print("    (none)")
+
+        print("\n" + "="*70)
+        print("  [1] Test I/O & Simulations")
+        print("      (Configure Fluent I/O, run simulation setups)")
+        print("\n  [2] Model Setup & Training")
+        print("      (Select dataset, configure POD-NN, train model)")
+        print("\n  [3] Data Visualization")
+        print("      (View training curves, comparisons, metrics)")
+        print("\n  [4] Manage Project Data")
+        print("      (Delete datasets or models)")
+        print(f"\n  [0] Close Project & Return to Project Selection")
+        print("="*70)
+
+        choice = ui_helpers.get_choice(4)
+
+        if choice == 0:
+            return
+
+        elif choice == 1:
+            test_io_and_simulations_menu(project)
+
+        elif choice == 2:
+            model_setup_and_training_menu(project)
+
+        elif choice == 3:
+            dv.data_visualization_menu(ui_helpers)
+
+        elif choice == 4:
+            manage_project_data_menu(project)
+
+
+# ============================================================
+# TEST I/O & SIMULATIONS MENU
+# ============================================================
+
+def test_io_and_simulations_menu(project):
     """
-    # Load saved settings or use defaults
-    settings = user_settings.get_solver_settings()
+    Menu for configuring I/O and running simulations.
+    Saves datasets as named folders within the project.
+    """
+    solver = None
 
     while True:
-        print("\n" + "="*70)
-        print("FLUENT SOLVER SETTINGS")
-        print("="*70)
-        print(f"\n  [1] Precision: {settings['precision']}")
-        print(f"  [2] Processor Count: {settings['processor_count']}")
-        print(f"  [3] Dimension: {settings['dimension']}D")
-        print(f"  [4] GUI: {'Enabled' if settings['use_gui'] else 'Disabled'}")
-        print("\n  [P] Proceed with these settings")
-        print("  [C] Cancel")
-        print("="*70)
+        ui_helpers.clear_screen()
+        ui_helpers.print_header("TEST I/O & SIMULATIONS")
 
-        choice = input("\nEnter choice: ").strip().upper()
-
-        if choice == 'P':
-            # Save settings before returning
-            user_settings.save_solver_settings(settings)
-            return settings
-        elif choice == 'C':
-            return None
-        elif choice == '1':
-            print("\n[1] Single precision")
-            print("[2] Double precision")
-            prec_choice = input("Select precision [1-2]: ").strip()
-            if prec_choice == '1':
-                settings['precision'] = 'single'
-            elif prec_choice == '2':
-                settings['precision'] = 'double'
-        elif choice == '2':
-            try:
-                count = int(input("\nEnter processor count: ").strip())
-                if count > 0:
-                    settings['processor_count'] = count
-                else:
-                    print("Must be positive")
-                    pause()
-            except:
-                print("Invalid input")
-                pause()
-        elif choice == '3':
-            print("\n[1] 2D")
-            print("[2] 3D")
-            dim_choice = input("Select dimension [1-2]: ").strip()
-            if dim_choice == '1':
-                settings['dimension'] = 2
-            elif dim_choice == '2':
-                settings['dimension'] = 3
-        elif choice == '4':
-            settings['use_gui'] = not settings['use_gui']
-
-
-def open_case_file():
-    """Open a Fluent case file with GUI."""
-    print_header("OPEN FLUENT CASE FILE")
-
-    # Use file dialog to select case file
-    print("\nOpening file dialog...")
-    Tk().withdraw()  # Hide tkinter root window
-    case_file = filedialog.askopenfilename(
-        title="Select Fluent Case File",
-        filetypes=[
-            ("Fluent Case Files", "*.cas *.cas.h5 *.cas.gz"),
-            ("All Files", "*.*")
-        ],
-        initialdir=str(PROJECT_DIR)
-    )
-
-    if not case_file:
-        print("\n✗ No file selected")
-        pause()
-        return None
-
-    case_file = Path(case_file)
-    print(f"\n✓ Selected: {case_file.name}")
-    print(f"  Full path: {case_file}")
-
-    # Add to recent projects
-    user_settings.add_recent_project(case_file)
-
-    # Configure solver settings
-    settings = configure_solver_settings()
-    if settings is None:
-        print("\n✗ Launch cancelled by user")
-        pause()
-        return None
-
-    # Launch Fluent
-    print("\nLaunching Fluent...")
-    print(f"  Precision: {settings['precision']}")
-    print(f"  Processors: {settings['processor_count']}")
-    print(f"  Dimension: {settings['dimension']}D")
-    print(f"  Mode: solver")
-    print(f"  GUI: {'Enabled' if settings['use_gui'] else 'Disabled'}")
-
-    try:
-        import ansys.fluent.core as pyfluent
-        from ansys.fluent.core.launcher.launcher import UIMode
-
-        # Create log file for Fluent output
-        log_dir = PROJECT_DIR / "fluent_logs"
-        log_dir.mkdir(exist_ok=True)
-        log_file_path = log_dir / f"fluent_launch_{case_file.stem}.log"
-        fluent_log_file = open(log_file_path, 'w', buffering=1)
-
-        # Redirect stdout/stderr to suppress Fluent TUI output
-        original_stdout = sys.stdout
-        original_stderr = sys.stderr
-        sys.stdout = fluent_log_file
-        sys.stderr = fluent_log_file
-
-        # Determine UI mode
-        ui_mode = UIMode.GUI if settings['use_gui'] else UIMode.NO_GUI_OR_GRAPHICS
-
-        solver = pyfluent.launch_fluent(
-            precision=settings['precision'],
-            processor_count=settings['processor_count'],
-            dimension=settings['dimension'],
-            mode="solver",
-            ui_mode=ui_mode
-        )
-
-        # Restore stdout/stderr
-        sys.stdout = original_stdout
-        sys.stderr = original_stderr
-
-        print(f"\n✓ Fluent launched (version {solver.get_fluent_version()})")
-        print(f"  Loading case file: {case_file.name}")
-        print(f"  Fluent output redirected to: {log_file_path.name}")
-
-        # Redirect during case loading
-        sys.stdout = fluent_log_file
-        sys.stderr = fluent_log_file
-        solver.settings.file.read_case(file_name=str(case_file))
-        sys.stdout = original_stdout
-        sys.stderr = original_stderr
-
-        print(f"\n✓ Case file loaded successfully")
-
-        fluent_log_file.close()
-
-        return solver
-
-    except Exception as e:
-        # Restore stdout/stderr if error occurs
-        sys.stdout = original_stdout
-        sys.stderr = original_stderr
-        print(f"\n✗ Error launching Fluent: {e}")
-        import traceback
-        traceback.print_exc()
-        try:
-            fluent_log_file.close()
-        except:
-            pass
-        pause()
-        return None
-
-
-def connect_to_fluent():
-    """Connect to an existing Fluent process."""
-    print_header("CONNECT TO EXISTING FLUENT SESSION")
-
-    try:
-        import ansys.fluent.core as pyfluent
-
-        print("\nSearching for running Fluent sessions...")
-
-        # This will attempt to connect to a running Fluent instance
-        # User needs to have Fluent already running with server mode enabled
-        print("\nNote: Fluent must be running with server mode enabled.")
-        print("      Start Fluent with: fluent 3d -server")
-
-        host = input("\nEnter Fluent server host [localhost]: ").strip() or "localhost"
-        port_str = input("Enter Fluent server port [empty for auto-detect]: ").strip()
-
-        if port_str:
-            port = int(port_str)
-            print(f"\nConnecting to Fluent at {host}:{port}...")
-            solver = pyfluent.connect_to_fluent(host=host, port=port)
+        # Show status
+        if solver:
+            print("\n✓ Fluent session active")
         else:
-            print(f"\nConnecting to Fluent at {host} (auto-detect port)...")
-            solver = pyfluent.connect_to_fluent(host=host)
+            print("\n○ No Fluent session")
 
-        print(f"\n✓ Connected to Fluent (version {solver.get_fluent_version()})")
+        print(f"\nProject: {project.info['project_name']}")
+        print(f"Simulation Setups: {len(project.datasets)}")
 
-        return solver
+        print(f"\n{'='*70}")
+        print("  [1] Open Fluent Case File")
+        print("  [2] Configure New Simulation Setup")
+        print("  [3] Edit Existing Dataset I/O")
+        print("  [4] Run Simulations for Dataset")
+        print("  [0] Back to Main Menu")
+        print("="*70)
 
-    except Exception as e:
-        print(f"\n✗ Error connecting to Fluent: {e}")
-        print("\nTroubleshooting:")
-        print("  1. Ensure Fluent is running with: fluent 3d -server")
-        print("  2. Check that the port is not blocked by firewall")
-        print("  3. Verify the host and port are correct")
-        pause()
-        return None
+        choice = ui_helpers.get_choice(4)
 
-
-def open_recent_project(project_path):
-    """Open a recent project."""
-    print_header("OPEN RECENT PROJECT")
-
-    project_path = Path(project_path)
-    print(f"\n✓ Selected: {project_path.name}")
-    print(f"  Full path: {project_path}")
-
-    if not project_path.exists():
-        print(f"\n✗ File not found: {project_path}")
-        pause()
-        return None
-
-    # Configure solver settings
-    settings = configure_solver_settings()
-    if settings is None:
-        print("\n✗ Launch cancelled by user")
-        pause()
-        return None
-
-    # Launch Fluent
-    print("\nLaunching Fluent...")
-    print(f"  Precision: {settings['precision']}")
-    print(f"  Processors: {settings['processor_count']}")
-    print(f"  Dimension: {settings['dimension']}D")
-    print(f"  Mode: solver")
-    print(f"  GUI: {'Enabled' if settings['use_gui'] else 'Disabled'}")
-
-    try:
-        import ansys.fluent.core as pyfluent
-        from ansys.fluent.core.launcher.launcher import UIMode
-
-        # Create log file for Fluent output
-        log_dir = PROJECT_DIR / "fluent_logs"
-        log_dir.mkdir(exist_ok=True)
-        log_file_path = log_dir / f"fluent_launch_{project_path.stem}.log"
-        fluent_log_file = open(log_file_path, 'w', buffering=1)
-
-        # Redirect stdout/stderr to suppress Fluent TUI output
-        original_stdout = sys.stdout
-        original_stderr = sys.stderr
-        sys.stdout = fluent_log_file
-        sys.stderr = fluent_log_file
-
-        # Determine UI mode
-        ui_mode = UIMode.GUI if settings['use_gui'] else UIMode.NO_GUI_OR_GRAPHICS
-
-        solver = pyfluent.launch_fluent(
-            precision=settings['precision'],
-            processor_count=settings['processor_count'],
-            dimension=settings['dimension'],
-            mode="solver",
-            ui_mode=ui_mode
-        )
-
-        # Restore stdout/stderr
-        sys.stdout = original_stdout
-        sys.stderr = original_stderr
-
-        print(f"\n✓ Fluent launched (version {solver.get_fluent_version()})")
-        print(f"  Loading case file: {project_path.name}")
-        print(f"  Fluent output redirected to: {log_file_path.name}")
-
-        # Redirect during case loading
-        sys.stdout = fluent_log_file
-        sys.stderr = fluent_log_file
-        solver.settings.file.read_case(file_name=str(project_path))
-        sys.stdout = original_stdout
-        sys.stderr = original_stderr
-
-        print(f"\n✓ Case file loaded successfully")
-
-        fluent_log_file.close()
-
-        # Update recent projects (move to top)
-        user_settings.add_recent_project(project_path)
-
-        return solver
-
-    except Exception as e:
-        # Restore stdout/stderr if error occurs
-        sys.stdout = original_stdout
-        sys.stderr = original_stderr
-        print(f"\n✗ Error opening project: {e}")
-        import traceback
-        traceback.print_exc()
-        try:
-            fluent_log_file.close()
-        except:
-            pass
-        pause()
-        return None
-
-
-# ============================================================
-# FLUENT INSPECTION
-# ============================================================
-
-def list_surfaces(solver):
-    """List all available surfaces in the Fluent case."""
-    print("\n" + "="*70)
-    print("Available Surfaces:")
-    print("="*70)
-
-    try:
-        # Get all boundary zones (surfaces)
-        boundary_conditions = solver.settings.setup.boundary_conditions
-
-        surfaces = []
-
-        # Iterate through all boundary types
-        for bc_type in dir(boundary_conditions):
-            if bc_type.startswith('_'):
-                continue
-
-            # Skip child_names and command_names types entirely
-            if bc_type in ['child_names', 'command_names']:
-                continue
-
-            bc_obj = getattr(boundary_conditions, bc_type)
-
-            # Check if it's a boundary condition container
-            if hasattr(bc_obj, '__iter__') and not isinstance(bc_obj, str):
+        if choice == 0:
+            # Close Fluent if open
+            if solver:
                 try:
-                    # Filter out child_names and command_names attributes
-                    for name in bc_obj:
-                        if name not in ['child_names', 'command_names']:
-                            surfaces.append({
-                                'name': name,
-                                'type': bc_type.replace('_', ' ').title()
-                            })
+                    print("\nClosing Fluent session...")
+                    solver.exit()
+                    print("✓ Fluent closed")
                 except:
                     pass
+            return
 
-        # Try to get ALL surfaces (including created surfaces like planes, iso-surfaces, etc.)
-        try:
-            if hasattr(solver, 'fields') and hasattr(solver.fields, 'field_data'):
-                # Get all accessible surface names using allowed_values()
-                all_surface_names = solver.fields.field_data.surfaces.allowed_values()
-
-                for surf_name in all_surface_names:
-                    # Skip if already in list (avoid duplicates)
-                    if not any(s['name'] == surf_name for s in surfaces):
-                        surfaces.append({
-                            'name': surf_name,
-                            'type': 'Created Surface'
-                        })
-        except Exception as e:
-            # If field_data not available or error, just skip
-            pass
-
-        if surfaces:
-            print(f"\nFound {len(surfaces)} surface(s):\n")
-            for i, surf in enumerate(surfaces, 1):
-                print(f"  [{i:2d}] {surf['name']:30s} (Type: {surf['type']})")
-        else:
-            print("\n✗ No surfaces found in case file")
-
-        return surfaces
-
-    except Exception as e:
-        print(f"\n✗ Error listing surfaces: {e}")
-        import traceback
-        traceback.print_exc()
-        return []
-
-
-def list_cell_zones(solver):
-    """List all available cell zones (volumes) in the Fluent case."""
-    print("\n" + "="*70)
-    print("Available Cell Zones (Volumes):")
-    print("="*70)
-
-    try:
-        # Get all cell zones
-        cell_zones = solver.settings.setup.cell_zone_conditions
-
-        zones = []
-
-        # Iterate through zone types
-        for zone_type in dir(cell_zones):
-            if zone_type.startswith('_'):
-                continue
-
-            # Skip child_names and command_names types entirely
-            if zone_type in ['child_names', 'command_names']:
-                continue
-
-            zone_obj = getattr(cell_zones, zone_type)
-
-            # Check if it's a cell zone container
-            if hasattr(zone_obj, '__iter__') and not isinstance(zone_obj, str):
-                try:
-                    # Filter out child_names and command_names attributes
-                    for name in zone_obj:
-                        if name not in ['child_names', 'command_names']:
-                            zones.append({
-                                'name': name,
-                                'type': zone_type.replace('_', ' ').title()
-                            })
-                except:
-                    pass
-
-        if zones:
-            print(f"\nFound {len(zones)} cell zone(s):\n")
-            for i, zone in enumerate(zones, 1):
-                print(f"  [{i:2d}] {zone['name']:30s} (Type: {zone['type']})")
-        else:
-            print("\n✗ No cell zones found in case file")
-
-        return zones
-
-    except Exception as e:
-        print(f"\n✗ Error listing cell zones: {e}")
-        import traceback
-        traceback.print_exc()
-        return []
-
-
-def list_report_definitions(solver):
-    """List all available report definitions in the Fluent case."""
-    print("\n" + "="*70)
-    print("Available Report Definitions:")
-    print("="*70)
-
-    try:
-        # Access report definitions
-        report_defs = solver.settings.solution.report_definitions
-
-        all_reports = []
-
-        # Report definition types to check
-        report_types = ['surface', 'volume', 'flux', 'force', 'lift', 'drag',
-                       'moment', 'expression', 'user_defined']
-
-        for report_type in report_types:
-            if hasattr(report_defs, report_type):
-                report_obj = getattr(report_defs, report_type)
-
-                # Check if it's iterable
-                if hasattr(report_obj, '__iter__') and not isinstance(report_obj, str):
+        elif choice == 1:
+            # Open Fluent
+            new_solver = open_fluent_case()
+            if new_solver:
+                if solver:  # Close previous
                     try:
-                        for name in report_obj:
-                            if name not in ['child_names', 'command_names']:
-                                all_reports.append({
-                                    'name': name,
-                                    'type': report_type.replace('_', ' ').title()
-                                })
+                        solver.exit()
                     except:
                         pass
+                solver = new_solver
 
-        if all_reports:
-            print(f"\nFound {len(all_reports)} report definition(s):\n")
-            for i, rep in enumerate(all_reports, 1):
-                print(f"  [{i:2d}] {rep['name']:30s} (Type: {rep['type']})")
-        else:
-            print("\n  No report definitions found in case file")
+        elif choice == 2:
+            # Configure new simulation setup
+            if not solver:
+                print("\n✗ Please open Fluent first (Option 1)")
+                ui_helpers.pause()
+            else:
+                configure_new_dataset(project, solver)
 
-        return all_reports
+        elif choice == 3:
+            # Edit existing dataset I/O
+            if not solver:
+                print("\n✗ Please open Fluent first (Option 1)")
+                ui_helpers.pause()
+            else:
+                edit_existing_dataset(project, solver)
 
-    except Exception as e:
-        print(f"\n✗ Error listing report definitions: {e}")
-        import traceback
-        traceback.print_exc()
-        return []
+        elif choice == 4:
+            # Run simulations for dataset
+            run_simulations_for_dataset(project, solver)
 
 
-def inspect_fluent_case(solver):
-    """Inspect Fluent case and display available surfaces and volumes."""
-    print_header("FLUENT CASE INSPECTION")
+def open_fluent_case():
+    """Open Fluent case file."""
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("OPEN FLUENT CASE FILE")
 
-    # List surfaces
-    surfaces = list_surfaces(solver)
+    # Show recent case files only
+    recent_case_files = user_settings.get_recent_case_files()
 
-    # List cell zones
-    cell_zones = list_cell_zones(solver)
+    print("\n  [1] Browse for Case File")
 
-    # List report definitions
-    report_defs = list_report_definitions(solver)
+    if recent_case_files:
+        print("\n  Recent Case Files:")
+        for i, case_path in enumerate(recent_case_files[:5], 2):
+            case_path = Path(case_path)
+            parent_dir = case_path.parent.name
+            print(f"  [{i}] {case_path.name} ({parent_dir})")
 
-    # Summary
-    print("\n" + "="*70)
-    print("Summary:")
+    print(f"\n  [0] Cancel")
     print("="*70)
-    print(f"  Total Surfaces: {len(surfaces)}")
-    print(f"  Total Cell Zones: {len(cell_zones)}")
-    print(f"  Total Report Definitions: {len(report_defs)}")
-    print("\nThese surfaces/zones can be used for POD extraction.")
 
-    pause()
-
-
-# ============================================================
-# PROJECT CONFIGURATION
-# ============================================================
-
-def setup_model_inputs(solver, selected_inputs):
-    """Configure model inputs (boundary conditions and cell zones)."""
-
-    while True:
-        clear_screen()
-        print_header("CONFIGURE MODEL INPUTS")
-
-        # Show selected items at top
-        if selected_inputs:
-            print("\n" + "="*70)
-            print("SELECTED INPUTS:")
-            print("="*70)
-            for i, item in enumerate(selected_inputs, 1):
-                print(f"  [{i:2d}] {item['name']:30s} (Type: {item['type']})")
-            print("="*70)
-
-        print("\nLoading boundary conditions and cell zones...")
-
-        # Get boundary conditions
-        try:
-            boundary_conditions = solver.settings.setup.boundary_conditions
-            surfaces = []
-
-            for bc_type in dir(boundary_conditions):
-                if bc_type.startswith('_') or bc_type in ['child_names', 'command_names']:
-                    continue
-
-                bc_obj = getattr(boundary_conditions, bc_type)
-                if hasattr(bc_obj, '__iter__') and not isinstance(bc_obj, str):
-                    try:
-                        for name in bc_obj:
-                            if name not in ['child_names', 'command_names']:
-                                surfaces.append({
-                                    'name': name,
-                                    'type': bc_type.replace('_', ' ').title(),
-                                    'category': 'Boundary Condition'
-                                })
-                    except Exception as e:
-                        pass
-        except Exception as e:
-            print(f"Warning: Error loading boundary conditions: {e}")
-            surfaces = []
-
-        # Get cell zones
-        try:
-            cell_zones_obj = solver.settings.setup.cell_zone_conditions
-            cell_zones = []
-
-            for zone_type in dir(cell_zones_obj):
-                if zone_type.startswith('_') or zone_type in ['child_names', 'command_names']:
-                    continue
-
-                zone_obj = getattr(cell_zones_obj, zone_type)
-                if hasattr(zone_obj, '__iter__') and not isinstance(zone_obj, str):
-                    try:
-                        for name in zone_obj:
-                            if name not in ['child_names', 'command_names']:
-                                cell_zones.append({
-                                    'name': name,
-                                    'type': zone_type.replace('_', ' ').title(),
-                                    'category': 'Cell Zone'
-                                })
-                    except Exception as e:
-                        pass
-        except Exception as e:
-            print(f"Warning: Error loading cell zones: {e}")
-            cell_zones = []
-
-        # Combine all available items
-        all_items = surfaces + cell_zones
-
-        # Display available items
-        print(f"\nAVAILABLE INPUTS ({len(all_items)} total):\n")
-        for i, item in enumerate(all_items, 1):
-            marker = "[X]" if item in selected_inputs else "[ ]"
-            print(f"  {marker} [{i:2d}] {item['name']:30s} ({item['category']} - {item['type']})")
-
-        print(f"\n{'='*70}")
-        print("[Number] Toggle selection")
-        print("[R] Refresh list")
-        print("[C] Clear all selections")
-        print("[D] Done")
-        print("="*70)
-
-        choice = input("\nEnter choice: ").strip().upper()
-
-        if choice == 'D':
-            return selected_inputs
-        elif choice == 'R':
-            continue  # Refresh - loop will re-fetch data
-        elif choice == 'C':
-            selected_inputs.clear()
-        elif choice.isdigit():
-            idx = int(choice) - 1
-            if 0 <= idx < len(all_items):
-                item = all_items[idx]
-                if item in selected_inputs:
-                    selected_inputs.remove(item)
-                else:
-                    selected_inputs.append(item)
-
-
-def setup_model_outputs(solver, selected_outputs):
-    """Configure model outputs (surfaces, cell zones, report definitions)."""
-
-    while True:
-        clear_screen()
-        print_header("CONFIGURE MODEL OUTPUTS")
-
-        # Show selected items at top
-        if selected_outputs:
-            print("\n" + "="*70)
-            print("SELECTED OUTPUTS:")
-            print("="*70)
-            for i, item in enumerate(selected_outputs, 1):
-                print(f"  [{i:2d}] {item['name']:30s} (Type: {item['type']})")
-            print("="*70)
-
-        print("\nLoading surfaces, cell zones, and report definitions...")
-
-        # Get surfaces
-        try:
-            boundary_conditions = solver.settings.setup.boundary_conditions
-            surfaces = []
-
-            for bc_type in dir(boundary_conditions):
-                if bc_type.startswith('_') or bc_type in ['child_names', 'command_names']:
-                    continue
-
-                bc_obj = getattr(boundary_conditions, bc_type)
-                if hasattr(bc_obj, '__iter__') and not isinstance(bc_obj, str):
-                    try:
-                        for name in bc_obj:
-                            if name not in ['child_names', 'command_names']:
-                                surfaces.append({
-                                    'name': name,
-                                    'type': bc_type.replace('_', ' ').title(),
-                                    'category': 'Surface'
-                                })
-                    except Exception as e:
-                        pass
-
-            # Try to get ALL surfaces (including created surfaces like planes, iso-surfaces, etc.)
-            try:
-                if hasattr(solver, 'fields') and hasattr(solver.fields, 'field_data'):
-                    # Get all accessible surface names using allowed_values()
-                    all_surface_names = solver.fields.field_data.surfaces.allowed_values()
-
-                    for surf_name in all_surface_names:
-                        # Skip if already in list (avoid duplicates)
-                        if not any(s['name'] == surf_name for s in surfaces):
-                            surfaces.append({
-                                'name': surf_name,
-                                'type': 'Created Surface',
-                                'category': 'Surface'
-                            })
-            except:
-                pass
-
-        except Exception as e:
-            print(f"Warning: Error loading surfaces: {e}")
-            surfaces = []
-
-        # Get cell zones
-        try:
-            cell_zones_obj = solver.settings.setup.cell_zone_conditions
-            cell_zones = []
-
-            for zone_type in dir(cell_zones_obj):
-                if zone_type.startswith('_') or zone_type in ['child_names', 'command_names']:
-                    continue
-
-                zone_obj = getattr(cell_zones_obj, zone_type)
-                if hasattr(zone_obj, '__iter__') and not isinstance(zone_obj, str):
-                    try:
-                        for name in zone_obj:
-                            if name not in ['child_names', 'command_names']:
-                                cell_zones.append({
-                                    'name': name,
-                                    'type': zone_type.replace('_', ' ').title(),
-                                    'category': 'Cell Zone'
-                                })
-                    except Exception as e:
-                        pass
-        except Exception as e:
-            print(f"Warning: Error loading cell zones: {e}")
-            cell_zones = []
-
-        # Get report definitions
-        try:
-            report_defs_obj = solver.settings.solution.report_definitions
-            report_defs = []
-
-            report_types = ['surface', 'volume', 'flux', 'force', 'lift', 'drag',
-                           'moment', 'expression', 'user_defined']
-
-            for report_type in report_types:
-                if hasattr(report_defs_obj, report_type):
-                    report_obj = getattr(report_defs_obj, report_type)
-                    if hasattr(report_obj, '__iter__') and not isinstance(report_obj, str):
-                        try:
-                            for name in report_obj:
-                                if name not in ['child_names', 'command_names']:
-                                    report_defs.append({
-                                        'name': name,
-                                        'type': report_type.replace('_', ' ').title(),
-                                        'category': 'Report Definition'
-                                    })
-                        except Exception as e:
-                            pass
-        except Exception as e:
-            print(f"Warning: Error loading report definitions: {e}")
-            report_defs = []
-
-        # Combine all available items
-        all_items = surfaces + cell_zones + report_defs
-
-        # Display available items
-        print(f"\nAVAILABLE OUTPUTS ({len(all_items)} total):\n")
-        for i, item in enumerate(all_items, 1):
-            marker = "[X]" if item in selected_outputs else "[ ]"
-            print(f"  {marker} [{i:2d}] {item['name']:30s} ({item['category']} - {item['type']})")
-
-        print(f"\n{'='*70}")
-        print("[Number] Toggle selection")
-        print("[R] Refresh list")
-        print("[C] Clear all selections")
-        print("[D] Done")
-        print("="*70)
-
-        choice = input("\nEnter choice: ").strip().upper()
-
-        if choice == 'D':
-            return selected_outputs
-        elif choice == 'R':
-            continue  # Refresh - loop will re-fetch data
-        elif choice == 'C':
-            selected_outputs.clear()
-        elif choice.isdigit():
-            idx = int(choice) - 1
-            if 0 <= idx < len(all_items):
-                item = all_items[idx]
-                if item in selected_outputs:
-                    selected_outputs.remove(item)
-                else:
-                    selected_outputs.append(item)
-
-
-def get_bc_parameters(bc_type):
-    """Get available parameters for a given boundary condition type."""
-    # Map BC types to their configurable parameters
-    bc_params = {
-        'velocity_inlet': ['velocity', 'temperature'],
-        'pressure_inlet': ['pressure', 'temperature'],
-        'pressure_outlet': ['pressure', 'temperature'],
-        'mass_flow_inlet': ['mass_flow', 'temperature'],
-        'wall': ['temperature', 'heat_flux'],
-        'fluid': ['temperature', 'density', 'viscosity'],
-        'solid': ['temperature', 'thermal_conductivity']
-    }
-
-    # Normalize the bc_type
-    bc_key = bc_type.lower().replace(' ', '_')
-
-    # Return parameters if found, otherwise return generic options
-    return bc_params.get(bc_key, ['value'])
-
-
-def setup_parameter_values(param_name, current_values=None):
-    """Configure test values for a single parameter."""
-    if current_values is None:
-        current_values = []
-
-    while True:
-        clear_screen()
-        print_header(f"CONFIGURE PARAMETER: {param_name.upper()}")
-
-        # Show current values
-        if current_values:
-            print("\n" + "="*70)
-            print("CURRENT VALUES:")
-            print("="*70)
-            for i, val in enumerate(current_values, 1):
-                print(f"  [{i:2d}] {val}")
-            print("="*70)
-        else:
-            print("\nNo values configured yet.")
-
-        print(f"\n{'='*70}")
-        print("  [1] Add Value Manually")
-        print("  [2] Fill Range (Evenly Spaced)")
-        print("  [3] Fill Range (Edge-Biased)")
-        print("  [4] Clear All Values")
-        print("  [5] Remove Specific Value")
-        print("  [D] Done")
-        print("="*70)
-
-        choice = input("\nEnter choice: ").strip().upper()
-
-        if choice == 'D':
-            return current_values
-        elif choice == '1':
-            # Manual entry
-            try:
-                val = float(input(f"\nEnter value for {param_name}: ").strip())
-                current_values.append(val)
-                current_values.sort()
-                print(f"✓ Added value: {val}")
-                pause()
-            except ValueError:
-                print("✗ Invalid number")
-                pause()
-        elif choice == '2':
-            # Evenly spaced
-            try:
-                min_val = float(input("\nEnter minimum value: ").strip())
-                max_val = float(input("Enter maximum value: ").strip())
-                num_points = int(input("Enter number of points: ").strip())
-
-                if num_points < 2:
-                    print("✗ Need at least 2 points")
-                    pause()
-                    continue
-
-                import numpy as np
-                new_values = np.linspace(min_val, max_val, num_points).tolist()
-                current_values.extend(new_values)
-                current_values = sorted(list(set(current_values)))  # Remove duplicates and sort
-                print(f"✓ Added {len(new_values)} evenly spaced values")
-                pause()
-            except ValueError:
-                print("✗ Invalid input")
-                pause()
-        elif choice == '3':
-            # Edge-biased (higher resolution near edges)
-            try:
-                min_val = float(input("\nEnter minimum value: ").strip())
-                max_val = float(input("Enter maximum value: ").strip())
-                num_points = int(input("Enter number of points: ").strip())
-
-                if num_points < 2:
-                    print("✗ Need at least 2 points")
-                    pause()
-                    continue
-
-                import numpy as np
-                # Use cosine spacing for edge bias
-                t = np.linspace(0, np.pi, num_points)
-                normalized = (1 - np.cos(t)) / 2  # Maps to [0, 1] with edge bias
-                new_values = (min_val + normalized * (max_val - min_val)).tolist()
-                current_values.extend(new_values)
-                current_values = sorted(list(set(current_values)))  # Remove duplicates and sort
-                print(f"✓ Added {len(new_values)} edge-biased values")
-                pause()
-            except ValueError:
-                print("✗ Invalid input")
-                pause()
-        elif choice == '4':
-            # Clear all
-            current_values.clear()
-            print("✓ Cleared all values")
-            pause()
-        elif choice == '5':
-            # Remove specific value
-            if not current_values:
-                print("✗ No values to remove")
-                pause()
-                continue
-            try:
-                idx = int(input(f"\nEnter index to remove [1-{len(current_values)}]: ").strip())
-                if 1 <= idx <= len(current_values):
-                    removed = current_values.pop(idx - 1)
-                    print(f"✓ Removed value: {removed}")
-                else:
-                    print("✗ Invalid index")
-                pause()
-            except ValueError:
-                print("✗ Invalid input")
-                pause()
-
-
-def setup_doe(solver, selected_inputs, doe_parameters):
-    """Configure Design of Experiment parameters for selected inputs."""
-
-    if not selected_inputs:
-        print_header("DESIGN OF EXPERIMENT SETUP")
-        print("\n✗ No model inputs selected! Please select inputs first (Option 1).")
-        pause()
-        return doe_parameters
-
-    while True:
-        clear_screen()
-        print_header("DESIGN OF EXPERIMENT SETUP")
-
-        print("\nSELECTED INPUTS:")
-        print("="*70)
-        for i, item in enumerate(selected_inputs, 1):
-            num_params = len(doe_parameters.get(item['name'], {}))
-            status = f"({num_params} parameters configured)" if num_params > 0 else "(not configured)"
-            print(f"  [{i:2d}] {item['name']:30s} {status}")
-        print("="*70)
-
-        print(f"\n{'='*70}")
-        print("[Number] Configure DOE for input")
-        print("[D] Done")
-        print("="*70)
-
-        choice = input("\nEnter choice: ").strip().upper()
-
-        if choice == 'D':
-            return doe_parameters
-        elif choice.isdigit():
-            idx = int(choice) - 1
-            if 0 <= idx < len(selected_inputs):
-                item = selected_inputs[idx]
-
-                # Get available parameters for this BC/zone type
-                available_params = get_bc_parameters(item['type'])
-
-                # Initialize DOE config for this item if not exists
-                if item['name'] not in doe_parameters:
-                    doe_parameters[item['name']] = {}
-
-                # Configure each parameter
-                while True:
-                    clear_screen()
-                    print_header(f"DOE: {item['name']} ({item['type']})")
-
-                    print("\nAVAILABLE PARAMETERS:")
-                    print("="*70)
-                    for i, param in enumerate(available_params, 1):
-                        num_values = len(doe_parameters[item['name']].get(param, []))
-                        status = f"({num_values} values)" if num_values > 0 else "(not configured)"
-                        print(f"  [{i:2d}] {param:20s} {status}")
-                    print("="*70)
-
-                    print(f"\n{'='*70}")
-                    print("[Number] Configure parameter")
-                    print("[B] Back to input list")
-                    print("="*70)
-
-                    param_choice = input("\nEnter choice: ").strip().upper()
-
-                    if param_choice == 'B':
-                        break
-                    elif param_choice.isdigit():
-                        param_idx = int(param_choice) - 1
-                        if 0 <= param_idx < len(available_params):
-                            param_name = available_params[param_idx]
-                            current_values = doe_parameters[item['name']].get(param_name, [])
-                            new_values = setup_parameter_values(param_name, current_values.copy())
-                            doe_parameters[item['name']][param_name] = new_values
-
-
-def save_model_setup(solver, selected_inputs, selected_outputs, doe_parameters):
-    """Save model setup to a JSON file."""
-    print_header("SAVE MODEL SETUP")
-
-    if not selected_inputs and not selected_outputs:
-        print("\n✗ No inputs or outputs selected! Nothing to save.")
-        pause()
+    max_choice = 1 + min(len(recent_case_files), 5)
+    choice = ui_helpers.get_choice(max_choice)
+
+    if choice == 0:
+        return None
+    elif choice == 1:
+        return fi.open_case_file(user_settings, PROJECT_DIR, ui_helpers)
+    elif 2 <= choice <= max_choice:
+        case_idx = choice - 2
+        case_path = recent_case_files[case_idx]
+        return fi.open_recent_project(case_path, user_settings, PROJECT_DIR, ui_helpers)
+
+
+def configure_new_dataset(project, solver):
+    """Configure a new simulation setup with I/O setup."""
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("CONFIGURE NEW SIMULATION SETUP")
+
+    # Get dataset name
+    dataset_name = input("\nEnter dataset name: ").strip()
+    if not dataset_name:
+        print("\n✗ Dataset name cannot be empty")
+        ui_helpers.pause()
         return
 
-    # Get the case file path from solver if possible
-    try:
-        # Try to determine the case file location
-        # Default to current directory
-        default_dir = PROJECT_DIR
+    # Check if dataset already exists
+    dataset_dir = project.sim_datasets_dir / dataset_name
+    if dataset_dir.exists():
+        overwrite = input(f"\n⚠ Dataset '{dataset_name}' already exists. Overwrite? [y/N]: ").strip().lower()
+        if overwrite != 'y':
+            print("\n✗ Dataset configuration cancelled")
+            ui_helpers.pause()
+            return
 
-        # Ask user for folder name
-        print(f"\nDefault save location: {default_dir}")
-        folder_name = input("\nEnter folder name [new_project]: ").strip() or "new_project"
-
-        # Create the save directory
-        save_dir = default_dir / folder_name
-        save_dir.mkdir(exist_ok=True)
-
-        # Prepare the setup data
-        setup_data = {
-            'timestamp': str(Path(__file__).parent),  # Placeholder for actual timestamp
-            'model_inputs': [
-                {
-                    'name': item['name'],
-                    'type': item['type'],
-                    'category': item.get('category', 'Unknown'),
-                    'doe_parameters': doe_parameters.get(item['name'], {})
-                }
-                for item in selected_inputs
-            ],
-            'model_outputs': [
-                {
-                    'name': item['name'],
-                    'type': item['type'],
-                    'category': item.get('category', 'Unknown')
-                }
-                for item in selected_outputs
-            ],
-            'doe_configuration': doe_parameters
-        }
-
-        # Add timestamp
-        from datetime import datetime
-        setup_data['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        # Save to JSON file
-        setup_file = save_dir / "model_setup.json"
-        with open(setup_file, 'w') as f:
-            json.dump(setup_data, f, indent=2)
-
-        print(f"\n✓ Model setup saved successfully!")
-        print(f"  Location: {setup_file}")
-        print(f"\n  Inputs: {len(selected_inputs)}")
-        print(f"  Outputs: {len(selected_outputs)}")
-        print(f"  DOE Configured: {len([k for k, v in doe_parameters.items() if v])}")
-
-    except Exception as e:
-        print(f"\n✗ Error saving model setup: {e}")
-        import traceback
-        traceback.print_exc()
-
-    pause()
-
-
-def configure_project(solver):
-    """Main project configuration menu."""
-
+    # Run I/O setup
     selected_inputs = []
     selected_outputs = []
-    doe_parameters = {}  # Store DOE configuration for each input
+    output_params = {}
+
+    result = input_output_setup_menu(solver, selected_inputs, selected_outputs, output_params)
+
+    if not result:
+        print("\n✗ I/O setup not completed")
+        ui_helpers.pause()
+        return
+
+    solver, selected_inputs, selected_outputs, output_params, setup_data, analysis, _ = result
+
+    if not setup_data:
+        print("\n✗ Setup data not saved")
+        ui_helpers.pause()
+        return
+
+    # Create dataset directory
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save setup file
+    setup_file = dataset_dir / "model_setup.json"
+    with open(setup_file, 'w') as f:
+        json.dump(setup_data, f, indent=2)
+
+    # Create dataset structure
+    from modules import pod_nn_builder as pnn
+    pnn.create_dataset_structure(dataset_dir, analysis, setup_data, ui_helpers)
+
+    # Save output parameters
+    output_params_file = dataset_dir / "output_parameters.json"
+    with open(output_params_file, 'w') as f:
+        json.dump(output_params, f, indent=2)
+
+    print(f"\n✓ Dataset '{dataset_name}' configured successfully!")
+    ui_helpers.pause()
+
+    # Refresh project
+    project.scan()
+
+
+def edit_existing_dataset(project, solver):
+    """Edit I/O configuration of an existing dataset."""
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("EDIT EXISTING DATASET I/O")
+
+    if not project.datasets:
+        print("\n✗ No datasets found in project")
+        ui_helpers.pause()
+        return
+
+    # List datasets
+    print("\nAvailable Datasets:")
+    for i, dataset in enumerate(project.datasets, 1):
+        print(f"  [{i}] {dataset['name']}")
+
+    print(f"\n  [0] Cancel")
+    print("="*70)
+
+    choice = ui_helpers.get_choice(len(project.datasets))
+
+    if choice == 0:
+        return
+
+    dataset = project.datasets[choice - 1]
+    dataset_dir = dataset['path']
+    setup_file = dataset['setup_file']
+
+    # Load existing setup
+    with open(setup_file, 'r') as f:
+        setup_data = json.load(f)
+
+    selected_inputs = setup_data['model_inputs']
+    selected_outputs = setup_data['model_outputs']
+
+    # Load DOE parameters and attach to inputs
+    doe_config = setup_data.get('doe_configuration', {})
+    for input_item in selected_inputs:
+        input_item['doe_parameters'] = doe_config.get(input_item['name'], {})
+
+    # Load output parameters
+    output_params = {}
+    output_params_file = dataset_dir / "output_parameters.json"
+    if output_params_file.exists():
+        with open(output_params_file, 'r') as f:
+            output_params = json.load(f)
+
+    # Run I/O setup menu
+    result = input_output_setup_menu(solver, selected_inputs, selected_outputs, output_params)
+
+    if result:
+        solver, selected_inputs, selected_outputs, output_params, setup_data, analysis, _ = result
+
+        if setup_data:
+            # Save updated setup
+            with open(setup_file, 'w') as f:
+                json.dump(setup_data, f, indent=2)
+
+            # Save output parameters
+            with open(output_params_file, 'w') as f:
+                json.dump(output_params, f, indent=2)
+
+            print(f"\n✓ Dataset '{dataset['name']}' updated successfully!")
+            ui_helpers.pause()
+
+            # Refresh project
+            project.scan()
+
+
+def run_simulations_for_dataset(project, solver):
+    """Run simulations for a selected dataset."""
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("RUN SIMULATIONS FOR DATASET")
+
+    if not project.datasets:
+        print("\n✗ No datasets found in project")
+        ui_helpers.pause()
+        return
+
+    # List datasets
+    print("\nAvailable Datasets:")
+    for i, dataset in enumerate(project.datasets, 1):
+        status = f"{dataset['completeness']:.0f}% complete"
+        print(f"  [{i}] {dataset['name']:30s} [{status}] ({dataset['num_simulations']}/{dataset['total_required']})")
+
+    print(f"\n  [0] Cancel")
+    print("="*70)
+
+    choice = ui_helpers.get_choice(len(project.datasets))
+
+    if choice == 0:
+        return
+
+    dataset = project.datasets[choice - 1]
+    dataset_dir = dataset['path']
+    setup_file = dataset['setup_file']
+
+    # Load setup
+    with open(setup_file, 'r') as f:
+        setup_data = json.load(f)
+
+    from modules import pod_nn_builder as pnn
+    analysis = pnn.analyze_setup_dimensions(setup_data)
+
+    # Check if Fluent is connected
+    if not solver:
+        print("\n✗ Please open Fluent first")
+        ui_helpers.pause()
+        return
+
+    # Run simulations menu
+    sr.run_simulations_menu(solver, setup_data, analysis, dataset_dir, ui_helpers)
+
+    # Refresh project
+    project.scan()
+
+
+def input_output_setup_menu(solver, selected_inputs, selected_outputs, output_params):
+    """
+    Submenu for input/output configuration.
+    """
+    setup_data = None
+    analysis = None
 
     while True:
-        clear_screen()
-        print_header("PROJECT CONFIGURATION")
+        ui_helpers.clear_screen()
+        ui_helpers.print_header("INPUT/OUTPUT SETUP")
 
-        print(f"\n  Model Inputs Selected: {len(selected_inputs)}")
-        print(f"  Model Outputs Selected: {len(selected_outputs)}")
-        print(f"  DOE Parameters Configured: {len(doe_parameters)}")
+        if solver:
+            print("\n✓ Fluent session active")
+        else:
+            print("\n○ No Fluent session - please open case file")
+
+        print(f"\nInputs Selected: {len(selected_inputs)}")
+        print(f"Outputs Selected: {len(selected_outputs)}")
+
+        # Count configured output parameters
+        num_configured = sum(1 for params in output_params.values() if params)
+        print(f"Output Parameters Configured: {num_configured}")
+
+        # Count DOE configured inputs
+        num_doe_configured = sum(
+            1 for input_item in selected_inputs
+            if 'doe_parameters' in input_item and any(
+                values for values in input_item.get('doe_parameters', {}).values()
+            )
+        )
+        print(f"DOE Configured: {num_doe_configured}/{len(selected_inputs)} inputs")
 
         print(f"\n{'='*70}")
-        print("  [1] Set Up Model Inputs (Boundary Conditions & Cell Zones)")
-        print("  [2] Set Up Model Outputs (Surfaces, Zones, Report Definitions)")
-        print("  [3] Design of Experiment Setup")
-        print("  [4] Save Model Setup")
-        print("  [5] Unload Project, Close Fluent, Back to Main")
+        print("  [1] Configure Model Inputs (BCs & Zones)")
+        print("  [2] Configure Model Outputs (Surfaces & Zones)")
+        print("  [3] Configure Output Parameters (Temp, Pressure, etc.)")
+        print("  [4] Design of Experiment Setup")
+        print("  [5] Save Setup & Finish")
+        print("  [0] Back (Discard Changes)")
+        print("="*70)
+
+        choice = ui_helpers.get_choice(5)
+
+        if choice == 0:
+            return None
+
+        elif choice == 1:
+            selected_inputs = pm.setup_model_inputs(solver, selected_inputs, ui_helpers)
+
+        elif choice == 2:
+            selected_outputs = pm.setup_model_outputs(solver, selected_outputs, ui_helpers)
+
+        elif choice == 3:
+            if not selected_outputs:
+                print("\n✗ Please configure outputs first (Option 2)")
+                ui_helpers.pause()
+            else:
+                output_params = op.setup_output_parameters(selected_outputs, output_params, ui_helpers)
+
+        elif choice == 4:
+            if not selected_inputs:
+                print("\n✗ Please configure inputs first (Option 1)")
+                ui_helpers.pause()
+            else:
+                from modules.doe_setup import setup_doe
+
+                # Initialize doe_parameters from existing data in selected_inputs
+                doe_parameters = {}
+                for input_item in selected_inputs:
+                    if 'doe_parameters' in input_item and input_item['doe_parameters']:
+                        doe_parameters[input_item['name']] = input_item['doe_parameters']
+
+                # Run DOE setup
+                doe_parameters = setup_doe(solver, selected_inputs, doe_parameters, ui_helpers)
+
+                # Save DOE back to selected_inputs
+                for input_item in selected_inputs:
+                    if 'doe_parameters' not in input_item:
+                        input_item['doe_parameters'] = {}
+                    input_item['doe_parameters'] = doe_parameters.get(input_item['name'], {})
+
+        elif choice == 5:
+            if not solver or not selected_inputs or not selected_outputs:
+                print("\n✗ Please complete all configuration steps first")
+                ui_helpers.pause()
+            else:
+                # Collect DOE parameters from selected inputs
+                doe_parameters = {}
+                for input_item in selected_inputs:
+                    if 'doe_parameters' in input_item and input_item['doe_parameters']:
+                        doe_parameters[input_item['name']] = input_item['doe_parameters']
+
+                # Create setup data
+                from datetime import datetime
+                setup_data = {
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'model_inputs': [
+                        {
+                            'name': item['name'],
+                            'type': item['type'],
+                            'category': item.get('category', 'Unknown'),
+                            'doe_parameters': doe_parameters.get(item['name'], {})
+                        }
+                        for item in selected_inputs
+                    ],
+                    'model_outputs': [
+                        {
+                            'name': item['name'],
+                            'type': item['type'],
+                            'category': item.get('category', 'Unknown')
+                        }
+                        for item in selected_outputs
+                    ],
+                    'doe_configuration': doe_parameters
+                }
+
+                from modules import pod_nn_builder as pnn
+                analysis = pnn.analyze_setup_dimensions(setup_data)
+
+                print(f"\n✓ Setup complete: {analysis['total_input_combinations']} simulations required")
+                ui_helpers.pause()
+
+                return (solver, selected_inputs, selected_outputs, output_params,
+                       setup_data, analysis, None)
+
+
+# ============================================================
+# MODEL SETUP & TRAINING MENU
+# ============================================================
+
+def model_setup_and_training_menu(project):
+    """
+    Menu for model configuration and training.
+    Lists available simulation setups.
+    """
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("MODEL SETUP & TRAINING")
+
+    if not project.datasets:
+        print("\n✗ No simulation setups found in project")
+        print("  Please create a setup first (Test I/O & Simulations menu)")
+        ui_helpers.pause()
+        return
+
+    # List datasets
+    print("\nAvailable Simulation Setups:")
+    for i, dataset in enumerate(project.datasets, 1):
+        status = f"{dataset['completeness']:.0f}% complete"
+        print(f"  [{i}] {dataset['name']:30s} [{status}]")
+
+    print(f"\n  [0] Back")
+    print("="*70)
+
+    choice = ui_helpers.get_choice(len(project.datasets))
+
+    if choice == 0:
+        return
+
+    dataset = project.datasets[choice - 1]
+    dataset_dir = dataset['path']
+
+    # Check completeness
+    if dataset['completeness'] < 100:
+        print(f"\n⚠ Warning: Dataset is only {dataset['completeness']:.0f}% complete")
+        proceed = input("  Proceed anyway? [y/N]: ").strip().lower()
+        if proceed != 'y':
+            return
+
+    # Enter training menu
+    mt.model_training_menu(dataset_dir, ui_helpers)
+
+    # Refresh project
+    project.scan()
+
+
+# ============================================================
+# MANAGE PROJECT DATA MENU
+# ============================================================
+
+def manage_project_data_menu(project):
+    """
+    Menu for managing project data (deleting datasets and models).
+    """
+    while True:
+        ui_helpers.clear_screen()
+        ui_helpers.print_header("MANAGE PROJECT DATA")
+
+        print(f"\nProject: {project.info['project_name']}")
+        print(f"Simulation Setups: {len(project.datasets)}")
+        print(f"Trained Models: {len(project.models)}")
+
+        print(f"\n{'='*70}")
+        print("  [1] Delete Simulation Setup")
+        print("  [2] Delete Trained Model")
         print("  [0] Back")
         print("="*70)
 
-        choice = get_choice(5)
+        choice = ui_helpers.get_choice(2)
 
         if choice == 0:
             return
+
         elif choice == 1:
-            selected_inputs = setup_model_inputs(solver, selected_inputs)
+            delete_dataset_menu(project)
+
         elif choice == 2:
-            selected_outputs = setup_model_outputs(solver, selected_outputs)
-        elif choice == 3:
-            doe_parameters = setup_doe(solver, selected_inputs, doe_parameters)
-        elif choice == 4:
-            save_model_setup(solver, selected_inputs, selected_outputs, doe_parameters)
-        elif choice == 5:
-            print("\nClosing Fluent session...")
-            try:
-                solver.exit()
-                print("✓ Fluent session closed")
-            except Exception as e:
-                print(f"✗ Error closing Fluent: {e}")
-            pause()
-            return
+            delete_model_menu(project)
+
+
+def delete_dataset_menu(project):
+    """Delete a simulation setup."""
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("DELETE SIMULATION SETUP")
+
+    if not project.datasets:
+        print("\n✗ No datasets found in project")
+        ui_helpers.pause()
+        return
+
+    # List datasets
+    print("\nAvailable Datasets:")
+    for i, dataset in enumerate(project.datasets, 1):
+        print(f"  [{i}] {dataset['name']}")
+
+    print(f"\n  [0] Cancel")
+    print("="*70)
+
+    choice = ui_helpers.get_choice(len(project.datasets))
+
+    if choice == 0:
+        return
+
+    dataset = project.datasets[choice - 1]
+
+    # Confirm deletion
+    confirm = input(f"\n⚠ Delete dataset '{dataset['name']}'? This cannot be undone. [y/N]: ").strip().lower()
+
+    if confirm == 'y':
+        if project.delete_dataset(dataset['name']):
+            print(f"\n✓ Dataset '{dataset['name']}' deleted successfully")
+        else:
+            print(f"\n✗ Failed to delete dataset '{dataset['name']}'")
+
+    ui_helpers.pause()
+
+
+def delete_model_menu(project):
+    """Delete a trained model."""
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("DELETE TRAINED MODEL")
+
+    if not project.models:
+        print("\n✗ No models found in project")
+        ui_helpers.pause()
+        return
+
+    # List models
+    print("\nAvailable Models:")
+    for i, model in enumerate(project.models, 1):
+        print(f"  [{i}] {model['name']}")
+
+    print(f"\n  [0] Cancel")
+    print("="*70)
+
+    choice = ui_helpers.get_choice(len(project.models))
+
+    if choice == 0:
+        return
+
+    model = project.models[choice - 1]
+
+    # Confirm deletion
+    confirm = input(f"\n⚠ Delete model '{model['name']}'? This cannot be undone. [y/N]: ").strip().lower()
+
+    if confirm == 'y':
+        if project.delete_model(model['name']):
+            print(f"\n✓ Model '{model['name']}' deleted successfully")
+        else:
+            print(f"\n✗ Failed to delete model '{model['name']}'")
+
+    ui_helpers.pause()
 
 
 # ============================================================
-# MAIN MENU
+# MAIN ENTRY POINT
 # ============================================================
 
-def main_menu():
-    """Main menu for Workflow Surrogate."""
+def main():
+    """Main entry point with project selection."""
+    # Open or create project
+    project = project_opening_menu()
 
-    while True:
-        clear_screen()
-
-        # Build menu options
-        options = [
-            "Open Fluent Case File"
-        ]
-
-        # Add recent projects (up to 3)
-        recent = user_settings.get_recent_projects()
-        for i, proj in enumerate(recent[:3], 1):
-            proj_path = Path(proj)
-            # Show filename and parent directory
-            location = proj_path.parent.name if proj_path.parent.name else proj_path.parent
-            options.append(f"Recent Project {i}: {proj_path.name} ({location})")
-
-        print_menu("WORKFLOW SURROGATE - MAIN MENU", options)
-
-        choice = get_choice(len(options))
-
-        if choice == 0:
-            # Exit
-            print("\nExiting Workflow Surrogate. Goodbye!")
-            sys.exit(0)
-
-        elif choice == 1:
-            # Open case file
-            clear_screen()
-            solver = open_case_file()
-            if solver:
-                clear_screen()
-                configure_project(solver)
-
-        elif choice in [2, 3, 4]:
-            # Recent projects
-            clear_screen()
-            recent = user_settings.get_recent_projects()
-            proj_index = choice - 2
-            if proj_index < len(recent):
-                solver = open_recent_project(recent[proj_index])
-                if solver:
-                    clear_screen()
-                    configure_project(solver)
+    # Enter project main menu
+    project_main_menu(project)
 
 
 # ============================================================
@@ -1270,8 +755,4 @@ def main_menu():
 # ============================================================
 
 if __name__ == "__main__":
-    try:
-        main_menu()
-    except KeyboardInterrupt:
-        print("\n\nInterrupted by user. Exiting...")
-        sys.exit(0)
+    main()
