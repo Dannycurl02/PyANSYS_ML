@@ -13,6 +13,8 @@ from pathlib import Path
 import json
 from datetime import datetime
 import time
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 
 
 class DirectNN(nn.Module):
@@ -264,7 +266,7 @@ class DirectNNModel:
         print("="*70)
 
         # Initialize plotter
-        from .autoencoder_model import RealTimePlotter
+       
         plotter = RealTimePlotter(self.config['epochs'])
 
         try:
@@ -308,7 +310,7 @@ class DirectNNModel:
                 self.history['epoch_time'].append(epoch_time)
 
                 # Update plot
-                plotter.update(self.history)
+                plotter.update(epoch, train_loss, val_loss, current_lr)
 
                 # Print progress
                 if (epoch + 1) % 10 == 0 or epoch == 0:
@@ -450,3 +452,83 @@ class DirectNNModel:
         print(f"\n[OK] Model loaded from: {load_dir}")
 
         return model
+
+
+class RealTimePlotter:
+    """
+    Real-time training visualization with matplotlib.
+    """
+
+    def __init__(self, total_epochs):
+        """
+        Parameters
+        ----------
+        total_epochs : int
+            Total number of training epochs
+        """
+        self.total_epochs = total_epochs
+
+        # Create figure with subplots
+        plt.ion()  # Interactive mode
+        self.fig, self.axes = plt.subplots(2, 1, figsize=(10, 8))
+        self.fig.suptitle('Autoencoder Training Progress', fontsize=14, fontweight='bold')
+
+        # Loss plot
+        self.ax_loss = self.axes[0]
+        self.ax_loss.set_xlabel('Epoch')
+        self.ax_loss.set_ylabel('Loss (MSE)')
+        self.ax_loss.set_title('Training and Validation Loss')
+        self.ax_loss.set_yscale('log')
+        self.ax_loss.grid(True, alpha=0.3)
+
+        self.line_train, = self.ax_loss.plot([], [], 'b-', label='Training', linewidth=2)
+        self.line_val, = self.ax_loss.plot([], [], 'r-', label='Validation', linewidth=2)
+        self.ax_loss.legend()
+
+        # Learning rate plot
+        self.ax_lr = self.axes[1]
+        self.ax_lr.set_xlabel('Epoch')
+        self.ax_lr.set_ylabel('Learning Rate')
+        self.ax_lr.set_title('Learning Rate Schedule')
+        self.ax_lr.set_yscale('log')
+        self.ax_lr.grid(True, alpha=0.3)
+
+        self.line_lr, = self.ax_lr.plot([], [], 'g-', linewidth=2)
+
+        # Data storage
+        self.epochs = []
+        self.train_losses = []
+        self.val_losses = []
+        self.learning_rates = []
+
+        plt.tight_layout()
+        plt.show(block=False)
+
+    def update(self, epoch, train_loss, val_loss, learning_rate):
+        """Update plots with new data."""
+        self.epochs.append(epoch)
+        self.train_losses.append(train_loss)
+        self.val_losses.append(val_loss)
+        self.learning_rates.append(learning_rate)
+
+        # Update loss plot
+        self.line_train.set_data(self.epochs, self.train_losses)
+        self.line_val.set_data(self.epochs, self.val_losses)
+
+        self.ax_loss.relim()
+        self.ax_loss.autoscale_view()
+
+        # Update learning rate plot
+        self.line_lr.set_data(self.epochs, self.learning_rates)
+
+        self.ax_lr.relim()
+        self.ax_lr.autoscale_view()
+
+        # Refresh display
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
+
+    def finalize(self):
+        """Finalize plot and keep window open."""
+        plt.ioff()
+        print("\n[OK] Training plot window will remain open. Close it to continue.")
