@@ -324,3 +324,111 @@ def setup_doe(solver, selected_inputs, doe_parameters, ui_helpers):
                                 del doe_parameters[item['name']]
 
     return doe_parameters
+
+
+def analyze_setup_dimensions(setup_data):
+    """
+    Analyze model setup to determine input and output dimensionality.
+
+    Parameters
+    ----------
+    setup_data : dict
+        Model setup dictionary from JSON
+
+    Returns
+    -------
+    dict
+        Dictionary containing dimensional analysis:
+        - num_inputs: Number of input variables
+        - num_outputs: Number of output variables
+        - input_details: List of input configurations
+        - output_details: List of output configurations
+        - total_input_combinations: Total number of input combinations in DOE
+    """
+    analysis = {
+        'num_inputs': 0,
+        'num_outputs': 0,
+        'input_details': [],
+        'output_details': [],
+        'total_input_combinations': 1
+    }
+
+    # Analyze inputs
+    for input_item in setup_data.get('model_inputs', []):
+        doe_params = input_item.get('doe_parameters', {})
+
+        # Count parameters with configured values
+        for param_name, param_values in doe_params.items():
+            if param_values:  # Non-empty list
+                analysis['num_inputs'] += 1
+                analysis['input_details'].append({
+                    'bc_name': input_item['name'],
+                    'bc_type': input_item['type'],
+                    'parameter': param_name,
+                    'num_values': len(param_values),
+                    'range': [min(param_values), max(param_values)] if param_values else None
+                })
+                # Multiply for total combinations
+                analysis['total_input_combinations'] *= len(param_values)
+
+    # Analyze outputs
+    for output_item in setup_data.get('model_outputs', []):
+        analysis['num_outputs'] += 1
+        analysis['output_details'].append({
+            'name': output_item['name'],
+            'type': output_item['type'],
+            'category': output_item.get('category', 'Unknown')
+        })
+
+    return analysis
+
+
+def create_dataset_structure(dataset_dir, analysis, setup_data, ui_helpers):
+    """Create the directory structure for dataset storage."""
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("CREATE DATASET STRUCTURE")
+
+    print(f"\nCreating dataset directory: {dataset_dir}")
+
+    try:
+        # Create main dataset directory
+        dataset_dir.mkdir(exist_ok=True)
+
+        # Create subdirectories
+        (dataset_dir / "inputs").mkdir(exist_ok=True)
+        (dataset_dir / "outputs").mkdir(exist_ok=True)
+        (dataset_dir / "raw_fluent_data").mkdir(exist_ok=True)
+        (dataset_dir / "pod_modes").mkdir(exist_ok=True)
+        (dataset_dir / "trained_models").mkdir(exist_ok=True)
+
+        # Create README
+        readme_path = dataset_dir / "README.txt"
+        with open(readme_path, 'w') as f:
+            f.write("Dataset Directory Structure\n")
+            f.write("="*70 + "\n\n")
+            f.write(f"Created: {setup_data['timestamp']}\n")
+            f.write(f"Required Simulations: {analysis['total_input_combinations']}\n")
+            f.write(f"Input Variables: {analysis['num_inputs']}\n")
+            f.write(f"Output Locations: {analysis['num_outputs']}\n\n")
+            f.write("Directories:\n")
+            f.write("  - inputs/          : DOE input parameters (CSV)\n")
+            f.write("  - outputs/         : Simulation output data (NPZ)\n")
+            f.write("  - raw_fluent_data/ : Raw Fluent export files\n")
+            f.write("  - pod_modes/       : POD basis functions\n")
+            f.write("  - trained_models/  : Trained neural networks\n")
+
+        print("\n✓ Dataset structure created successfully!")
+        print(f"\n  {dataset_dir}/")
+        print(f"  ├── inputs/")
+        print(f"  ├── outputs/")
+        print(f"  ├── raw_fluent_data/")
+        print(f"  ├── pod_modes/")
+        print(f"  ├── trained_models/")
+        print(f"  └── README.txt")
+
+    except Exception as e:
+        print(f"\n✗ Error creating dataset structure: {e}")
+        import traceback
+        traceback.print_exc()
+
+    ui_helpers.pause()

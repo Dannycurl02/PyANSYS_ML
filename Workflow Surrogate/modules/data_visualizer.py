@@ -8,7 +8,7 @@ from pathlib import Path
 import json
 
 
-def data_visualization_menu(ui_helpers):
+def data_visualization_menu(training_dir, ui_helpers):
     """
     Main menu for data visualization.
 
@@ -17,24 +17,16 @@ def data_visualization_menu(ui_helpers):
     ui_helpers : module
         UI helpers module
     """
-    selected_training = None
 
     while True:
         ui_helpers.clear_screen()
         ui_helpers.print_header("DATA VISUALIZATION")
 
-        if selected_training:
-            print(f"\nSelected Training: {selected_training.name}")
-        else:
-            print("\nNo training data selected")
-
         print(f"\n{'='*70}")
-        print("  [1] Select Training Data Folder")
-        print("  [2] View Training/Validation Curves")
-        print("  [3] View Model Performance Metrics")
-        print("  [4] Compare Predictions vs Actual")
-        print("  [5] Visualize POD Modes")
-        print("  [6] Error Distribution Analysis")
+        print("  [1] View Training/Validation Curves")
+        print("  [2] View Model Performance Metrics")
+        print("  [3] Compare Predictions vs Actual")
+        print("  [4] Error Distribution Analysis")
         print("  [0] Back to Main Menu")
         print("="*70)
 
@@ -42,84 +34,17 @@ def data_visualization_menu(ui_helpers):
 
         if choice == 0:
             return
+        
         elif choice == 1:
-            selected_training = select_training_folder(ui_helpers)
+                view_training_curves(training_dir, ui_helpers)
         elif choice == 2:
-            if selected_training:
-                view_training_curves(selected_training, ui_helpers)
-            else:
-                print("\n✗ Please select a training folder first.")
-                ui_helpers.pause()
+                view_performance_metrics(training_dir, ui_helpers)
         elif choice == 3:
-            if selected_training:
-                view_performance_metrics(selected_training, ui_helpers)
-            else:
-                print("\n✗ Please select a training folder first.")
-                ui_helpers.pause()
+                view_comparison_plots(training_dir, ui_helpers)
         elif choice == 4:
-            if selected_training:
-                view_comparison_plots(selected_training, ui_helpers)
-            else:
-                print("\n✗ Please select a training folder first.")
-                ui_helpers.pause()
-        elif choice == 5:
-            if selected_training:
-                visualize_pod_modes(selected_training, ui_helpers)
-            else:
-                print("\n✗ Please select a training folder first.")
-                ui_helpers.pause()
-        elif choice == 6:
-            if selected_training:
-                view_error_distribution(selected_training, ui_helpers)
-            else:
-                print("\n✗ Please select a training folder first.")
-                ui_helpers.pause()
+                view_error_distribution(training_dir, ui_helpers)
 
-
-def select_training_folder(ui_helpers):
-    """
-    Browse for and select a training data folder.
-
-    Parameters
-    ----------
-    ui_helpers : module
-        UI helpers module
-
-    Returns
-    -------
-    Path or None
-        Selected training folder
-    """
-    from tkinter import Tk, filedialog
-
-    ui_helpers.clear_screen()
-    ui_helpers.print_header("SELECT TRAINING FOLDER")
-
-    print("\nOpening folder dialog...")
-    Tk().withdraw()
-
-    folder = filedialog.askdirectory(
-        title="Select Training Data Folder",
-        mustexist=True
-    )
-
-    if not folder:
-        print("\n✗ No folder selected")
-        ui_helpers.pause()
-        return None
-
-    folder = Path(folder)
-
-    # Verify it's a valid training folder
-    if not (folder / "metadata.json").exists():
-        print(f"\n✗ Invalid training folder: metadata.json not found")
-        ui_helpers.pause()
-        return None
-
-    print(f"\n✓ Selected: {folder.name}")
-    ui_helpers.pause()
-
-    return folder
+        
 
 
 def view_training_curves(training_dir, ui_helpers):
@@ -136,9 +61,9 @@ def view_training_curves(training_dir, ui_helpers):
     ui_helpers.clear_screen()
     ui_helpers.print_header("TRAINING/VALIDATION CURVES")
 
-    print(f"\nTraining Directory: {training_dir.name}")
+    print(f"\nSelected Model: {training_dir.name}")
 
-    history_file = training_dir / "training_history.json"
+    history_file = training_dir / "model_info.json"
 
     if not history_file.exists():
         print("\n✗ Training history not found")
@@ -214,7 +139,7 @@ def view_comparison_plots(training_dir, ui_helpers):
     ui_helpers.clear_screen()
     ui_helpers.print_header("PREDICTIONS VS ACTUAL")
 
-    print(f"\nTraining Directory: {training_dir.name}")
+    print(f"\nSelected Model: {training_dir.name}")
 
     print("\n[PLACEHOLDER] This will display:")
     print("  - Scatter plot: Predicted vs Actual values")
@@ -222,38 +147,6 @@ def view_comparison_plots(training_dir, ui_helpers):
     print("  - Output field comparisons (side-by-side)")
     print("  - Error heatmaps on geometry")
     print("\n  Interactive matplotlib visualizations")
-
-    ui_helpers.pause()
-
-
-def visualize_pod_modes(training_dir, ui_helpers):
-    """
-    Visualize POD mode shapes.
-
-    Parameters
-    ----------
-    training_dir : Path
-        Training directory
-    ui_helpers : module
-        UI helpers module
-    """
-    ui_helpers.clear_screen()
-    ui_helpers.print_header("POD MODE VISUALIZATION")
-
-    print(f"\nTraining Directory: {training_dir.name}")
-
-    pod_file = training_dir / "pod_modes.npz"
-
-    if not pod_file.exists():
-        print("\n✗ POD modes file not found")
-        ui_helpers.pause()
-        return
-
-    print("\n[PLACEHOLDER] This will display:")
-    print("  - First 5-10 POD modes")
-    print("  - Explained variance per mode")
-    print("  - Cumulative variance explained")
-    print("  - Mode shapes on geometry")
 
     ui_helpers.pause()
 

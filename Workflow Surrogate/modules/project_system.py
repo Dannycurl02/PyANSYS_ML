@@ -173,8 +173,8 @@ class WorkflowProject:
                 num_sims = len(list(outputs_dir.glob("sim_*.npz")))
 
             # Count total required
-            from modules import pod_nn_builder as pnn
-            analysis = pnn.analyze_setup_dimensions(setup_data)
+            from modules import doe_setup as doe
+            analysis = doe.analyze_setup_dimensions(setup_data)
             total_required = analysis['total_input_combinations']
 
             completeness = (num_sims / total_required * 100) if total_required > 0 else 0

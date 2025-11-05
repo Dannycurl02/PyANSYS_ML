@@ -138,7 +138,7 @@ def project_main_menu(project):
         print("  [1] Test I/O & Simulations")
         print("      (Configure Fluent I/O, run simulation setups)")
         print("\n  [2] Model Setup & Training")
-        print("      (Select dataset, configure POD-NN, train model)")
+        print("      (Select dataset, configure, train model)")
         print("\n  [3] Data Visualization")
         print("      (View training curves, comparisons, metrics)")
         print("\n  [4] Manage Project Data")
@@ -158,7 +158,7 @@ def project_main_menu(project):
             model_setup_and_training_menu(project)
 
         elif choice == 3:
-            dv.data_visualization_menu(ui_helpers)
+            data_visualization_model_select_menu(project, ui_helpers)
 
         elif choice == 4:
             manage_project_data_menu(project)
@@ -323,8 +323,8 @@ def configure_new_dataset(project, solver):
         json.dump(setup_data, f, indent=2)
 
     # Create dataset structure
-    from modules import pod_nn_builder as pnn
-    pnn.create_dataset_structure(dataset_dir, analysis, setup_data, ui_helpers)
+    from modules import doe_setup as doe
+    doe.create_dataset_structure(dataset_dir, analysis, setup_data, ui_helpers)
 
     # Save output parameters
     output_params_file = dataset_dir / "output_parameters.json"
@@ -438,8 +438,8 @@ def run_simulations_for_dataset(project, solver):
     with open(setup_file, 'r') as f:
         setup_data = json.load(f)
 
-    from modules import pod_nn_builder as pnn
-    analysis = pnn.analyze_setup_dimensions(setup_data)
+    from modules import doe_setup as doe
+    analysis = doe.analyze_setup_dimensions(setup_data)
 
     # Check if Fluent is connected
     if not solver:
@@ -570,8 +570,8 @@ def input_output_setup_menu(solver, selected_inputs, selected_outputs, output_pa
                     'doe_configuration': doe_parameters
                 }
 
-                from modules import pod_nn_builder as pnn
-                analysis = pnn.analyze_setup_dimensions(setup_data)
+                from modules import doe_setup as doe
+                analysis = doe.analyze_setup_dimensions(setup_data)
 
                 print(f"\n✓ Setup complete: {analysis['total_input_combinations']} simulations required")
                 ui_helpers.pause()
@@ -593,13 +593,13 @@ def model_setup_and_training_menu(project):
     ui_helpers.print_header("MODEL SETUP & TRAINING")
 
     if not project.datasets:
-        print("\n✗ No simulation setups found in project")
-        print("  Please create a setup first (Test I/O & Simulations menu)")
+        print("\n✗ No simulation datasets found in project")
+        print("  Please create a setup and simulate first (Test I/O & Simulations menu)")
         ui_helpers.pause()
         return
 
     # List datasets
-    print("\nAvailable Simulation Setups:")
+    print("\nAvailable Simulation Datasets:")
     for i, dataset in enumerate(project.datasets, 1):
         status = f"{dataset['completeness']:.0f}% complete"
         print(f"  [{i}] {dataset['name']:30s} [{status}]")
@@ -624,6 +624,47 @@ def model_setup_and_training_menu(project):
 
     # Enter training menu
     mt.model_training_menu(dataset_dir, ui_helpers)
+
+    # Refresh project
+    project.scan()
+
+
+# ============================================================
+# Data Visualization Menu
+# ============================================================
+
+def data_visualization_model_select_menu(project, ui_helpers):
+    """
+    Menu for visualizing data.
+    Lists available trained models.
+    """
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("DATA VISUALIZATION")
+
+    if not project.models:
+        print("\n✗ No trained models found in project")
+        print("  Please train a model first")
+        ui_helpers.pause()
+        return
+
+    # List datasets
+    print("\nAvailable Models:")
+    for i, dataset in enumerate(project.models, 1):
+        print(f"  [{i}] {dataset['name']:30s}")
+
+    print(f"\n  [0] Back")
+    print("="*70)
+
+    choice = ui_helpers.get_choice(len(project.models))
+
+    if choice == 0:
+        return
+
+    model = project.models[choice - 1]
+    training_dir = model['path']
+
+    # Enter Visualize menu
+    dv.data_visualization_menu(training_dir, ui_helpers)
 
     # Refresh project
     project.scan()

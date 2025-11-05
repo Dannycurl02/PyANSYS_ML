@@ -9,8 +9,9 @@ import json
 from pathlib import Path
 import numpy as np
 from datetime import datetime
-from .autoencoder_model import AutoencoderModel, evaluate_model, create_adaptive_visualizations
 from .direct_nn_model import DirectNNModel
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 
 
 def analyze_dataset_for_training(dataset_dir):
@@ -604,6 +605,251 @@ def extract_input_params_from_doe(doe_config, sim_id):
 
     return input_values
 
+def _create_scalar_plots(Y_test, Y_pred, output_metadata, save_dir):
+    """Create scatter plots for scalar outputs."""
+    n_samples, n_outputs = Y_test.shape
+
+    # Create subplots
+    n_cols = min(4, n_outputs)
+    n_rows = (n_outputs + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+    if n_outputs == 1:
+        axes = np.array([[axes]])
+    elif n_rows == 1:
+        axes = axes.reshape(1, -1)
+    elif n_cols == 1:
+        axes = axes.reshape(-1, 1)
+
+    fig.suptitle('Scalar Output Predictions vs. Actual', fontsize=14, fontweight='bold')
+
+    for idx in range(n_outputs):
+        row = idx // n_cols
+        col = idx % n_cols
+        ax = axes[row, col]
+
+        y_true = Y_test[:, idx]
+        y_pred = Y_pred[:, idx]
+
+        # Scatter plot
+        ax.scatter(y_true, y_pred, alpha=0.6, s=50, edgecolors='k', linewidths=0.5)
+
+        # Perfect prediction line
+        min_val = min(y_true.min(), y_pred.min())
+        max_val = max(y_true.max(), y_pred.max())
+        ax.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Perfect')
+
+        # Calculate R²
+        ss_res = np.sum((y_true - y_pred) ** 2)
+        ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+        r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+
+        # Get output name if available
+        output_name = f"Output {idx+1}"
+        if output_metadata and 'names' in output_metadata:
+            output_name = output_metadata['names'][idx]
+
+        ax.set_xlabel('Actual')
+        ax.set_ylabel('Predicted')
+        ax.set_title(f'{output_name} (R²={r2:.4f})')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+    # Hide empty subplots
+    for idx in range(n_outputs, n_rows * n_cols):
+        row = idx // n_cols
+        col = idx % n_cols
+        axes[row, col].axis('off')
+
+    plt.tight_layout()
+
+    if save_dir:
+        plt.savefig(Path(save_dir) / 'scalar_predictions.png', dpi=150)
+
+    plt.show(block=False)
+    print("[OK] Scalar output plots displayed")
+
+def _create_2d_field_plots(Y_test, Y_pred, output_metadata, save_dir):
+    """Create visualizations for 2D field data."""
+    n_samples, n_outputs = Y_test.shape
+
+    # Create figure with multiple views
+    fig = plt.figure(figsize=(15, 10))
+    gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+
+    fig.suptitle('2D Field Data: Predictions vs. Actual', fontsize=14, fontweight='bold')
+
+    # 1. Overall scatter plot (sample of all field points)
+    ax1 = fig.add_subplot(gs[0, :])
+    sample_size = min(10000, Y_test.size)
+    indices = np.random.choice(Y_test.size, sample_size, replace=False)
+    y_true_flat = Y_test.flatten()[indices]
+    y_pred_flat = Y_pred.flatten()[indices]
+
+    ax1.scatter(y_true_flat, y_pred_flat, alpha=0.3, s=10, c='steelblue')
+
+    # Perfect prediction line
+    min_val = min(y_true_flat.min(), y_pred_flat.min())
+    max_val = max(y_true_flat.max(), y_pred_flat.max())
+    ax1.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Perfect')
+
+    # Overall R²
+    ss_res = np.sum((Y_test - Y_pred) ** 2)
+    ss_tot = np.sum((Y_test - np.mean(Y_test)) ** 2)
+    r2_overall = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+
+    ax1.set_xlabel('Actual Field Values')
+    ax1.set_ylabel('Predicted Field Values')
+    ax1.set_title(f'All Field Points (R²={r2_overall:.4f})')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    # 2. Per-sample RMSE
+    ax2 = fig.add_subplot(gs[1, :])
+    sample_errors = np.sqrt(np.mean((Y_test - Y_pred) ** 2, axis=1))
+
+    ax2.bar(range(n_samples), sample_errors, color='steelblue', alpha=0.7, edgecolor='k')
+    ax2.axhline(np.mean(sample_errors), color='r', linestyle='--',
+                linewidth=2, label=f'Mean RMSE={np.mean(sample_errors):.4e}')
+    ax2.set_xlabel('Sample Index')
+    ax2.set_ylabel('RMSE')
+    ax2.set_title('Prediction Error per Sample')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3, axis='y')
+
+    # 3. Sample field comparisons (show 3 samples if available)
+    n_show = min(3, n_samples)
+    for i in range(n_show):
+        ax = fig.add_subplot(gs[2, i])
+
+        sample_idx = i * (n_samples // n_show) if n_samples > 3 else i
+        error = np.abs(Y_test[sample_idx] - Y_pred[sample_idx])
+
+        ax.plot(Y_test[sample_idx], 'b-', label='Actual', alpha=0.7, linewidth=2)
+        ax.plot(Y_pred[sample_idx], 'r--', label='Predicted', alpha=0.7, linewidth=2)
+        ax.fill_between(range(n_outputs), Y_test[sample_idx] - error,
+                        Y_test[sample_idx] + error, alpha=0.2, color='red')
+
+        ax.set_xlabel('Field Point Index')
+        ax.set_ylabel('Field Value')
+        ax.set_title(f'Sample {sample_idx+1} (RMSE={sample_errors[sample_idx]:.4e})')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+
+    if save_dir:
+        plt.savefig(Path(save_dir) / '2d_field_predictions.png', dpi=150)
+
+    plt.show(block=False)
+    print("[OK] 2D field data plots displayed")
+
+def _create_3d_field_plots(Y_test, Y_pred, output_metadata, save_dir):
+    """Create visualizations for 3D field data."""
+    n_samples, n_outputs = Y_test.shape
+
+    # Create figure with multiple views
+    fig = plt.figure(figsize=(15, 10))
+    gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
+
+    fig.suptitle('3D Volume Data: Predictions vs. Actual', fontsize=14, fontweight='bold')
+
+    # 1. Overall scatter plot (sample of all field points)
+    ax1 = fig.add_subplot(gs[0, 0])
+    sample_size = min(15000, Y_test.size)
+    indices = np.random.choice(Y_test.size, sample_size, replace=False)
+    y_true_flat = Y_test.flatten()[indices]
+    y_pred_flat = Y_pred.flatten()[indices]
+
+    ax1.scatter(y_true_flat, y_pred_flat, alpha=0.2, s=5, c='steelblue')
+
+    # Perfect prediction line
+    min_val = min(y_true_flat.min(), y_pred_flat.min())
+    max_val = max(y_true_flat.max(), y_pred_flat.max())
+    ax1.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Perfect')
+
+    # Overall R²
+    ss_res = np.sum((Y_test - Y_pred) ** 2)
+    ss_tot = np.sum((Y_test - np.mean(Y_test)) ** 2)
+    r2_overall = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+
+    ax1.set_xlabel('Actual Field Values')
+    ax1.set_ylabel('Predicted Field Values')
+    ax1.set_title(f'All Volume Points (R²={r2_overall:.4f})')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    # 2. Per-sample RMSE
+    ax2 = fig.add_subplot(gs[0, 1])
+    sample_errors = np.sqrt(np.mean((Y_test - Y_pred) ** 2, axis=1))
+
+    ax2.bar(range(n_samples), sample_errors, color='steelblue', alpha=0.7, edgecolor='k')
+    ax2.axhline(np.mean(sample_errors), color='r', linestyle='--',
+                linewidth=2, label=f'Mean RMSE={np.mean(sample_errors):.4e}')
+    ax2.set_xlabel('Sample Index')
+    ax2.set_ylabel('RMSE')
+    ax2.set_title('Prediction Error per Sample')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3, axis='y')
+
+    # 3. Error distribution histogram
+    ax3 = fig.add_subplot(gs[1, 0])
+    all_errors = np.abs(Y_test - Y_pred).flatten()
+
+    ax3.hist(all_errors, bins=50, color='steelblue', alpha=0.7, edgecolor='k')
+    ax3.axvline(np.median(all_errors), color='r', linestyle='--',
+                linewidth=2, label=f'Median={np.median(all_errors):.4e}')
+    ax3.set_xlabel('Absolute Error')
+    ax3.set_ylabel('Frequency')
+    ax3.set_title('Error Distribution')
+    ax3.set_yscale('log')
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+
+    # 4. Field statistics comparison
+    ax4 = fig.add_subplot(gs[1, 1])
+
+    stats_names = ['Mean', 'Std', 'Min', 'Max']
+    actual_stats = [
+        np.mean(Y_test, axis=1),
+        np.std(Y_test, axis=1),
+        np.min(Y_test, axis=1),
+        np.max(Y_test, axis=1)
+    ]
+    pred_stats = [
+        np.mean(Y_pred, axis=1),
+        np.std(Y_pred, axis=1),
+        np.min(Y_pred, axis=1),
+        np.max(Y_pred, axis=1)
+    ]
+
+    x = np.arange(len(stats_names))
+    width = 0.35
+
+    for i in range(n_samples):
+        actual_vals = [stat[i] for stat in actual_stats]
+        pred_vals = [stat[i] for stat in pred_stats]
+
+        ax4.bar(x - width/2 + i*0.1, actual_vals, width/n_samples,
+                label=f'Actual S{i+1}' if i == 0 else '', alpha=0.7, color='blue')
+        ax4.bar(x + width/2 + i*0.1, pred_vals, width/n_samples,
+                label=f'Predicted S{i+1}' if i == 0 else '', alpha=0.7, color='red')
+
+    ax4.set_xlabel('Statistic')
+    ax4.set_ylabel('Value')
+    ax4.set_title('Field Statistics Comparison')
+    ax4.set_xticks(x)
+    ax4.set_xticklabels(stats_names)
+    ax4.legend()
+    ax4.grid(True, alpha=0.3, axis='y')
+
+    plt.tight_layout()
+
+    if save_dir:
+        plt.savefig(Path(save_dir) / '3d_volume_predictions.png', dpi=150)
+
+    plt.show(block=False)
+    print("[OK] 3D volume data plots displayed")
 
 def train_model(dataset_dir, config, analysis, ui_helpers):
     """
@@ -757,7 +1003,6 @@ def train_model(dataset_dir, config, analysis, ui_helpers):
 
     ui_helpers.pause()
 
-
 def load_existing_model(dataset_dir, ui_helpers):
     """Load and test a previously trained model."""
     ui_helpers.clear_screen()
@@ -897,3 +1142,136 @@ def load_existing_model(dataset_dir, ui_helpers):
         traceback.print_exc()
 
     ui_helpers.pause()
+
+def evaluate_model(model, X_test, Y_test):
+    """
+    Evaluate trained model on test data.
+
+    Parameters
+    ----------
+    model : AutoencoderModel
+        Trained model
+    X_test : ndarray
+        Test inputs (n_samples, input_dim)
+    Y_test : ndarray
+        Test outputs (n_samples, output_dim)
+
+    Returns
+    -------
+    dict
+        Dictionary containing evaluation metrics:
+        - r2_score: R-squared score
+        - mae: Mean absolute error
+        - rmse: Root mean squared error
+        - max_error: Maximum absolute error
+        - predictions: Model predictions
+    """
+    print(f"\n{'='*70}")
+    print("EVALUATING MODEL")
+    print(f"{'='*70}")
+
+    # Get predictions
+    Y_pred = model.predict(X_test)
+
+    # Calculate metrics
+    # R² score
+    ss_res = np.sum((Y_test - Y_pred) ** 2)
+    ss_tot = np.sum((Y_test - np.mean(Y_test, axis=0)) ** 2)
+    r2 = 1 - (ss_res / ss_tot)
+
+    # MAE
+    mae = np.mean(np.abs(Y_test - Y_pred))
+
+    # RMSE
+    rmse = np.sqrt(np.mean((Y_test - Y_pred) ** 2))
+
+    # Max error
+    max_error = np.max(np.abs(Y_test - Y_pred))
+
+    # Per-output metrics (if multiple outputs)
+    if Y_test.shape[1] > 1:
+        per_output_r2 = []
+        for i in range(Y_test.shape[1]):
+            ss_res_i = np.sum((Y_test[:, i] - Y_pred[:, i]) ** 2)
+            ss_tot_i = np.sum((Y_test[:, i] - np.mean(Y_test[:, i])) ** 2)
+            r2_i = 1 - (ss_res_i / ss_tot_i) if ss_tot_i > 0 else 0
+            per_output_r2.append(r2_i)
+    else:
+        per_output_r2 = [r2]
+
+    results = {
+        'r2_score': float(r2),
+        'mae': float(mae),
+        'rmse': float(rmse),
+        'max_error': float(max_error),
+        'per_output_r2': per_output_r2,
+        'predictions': Y_pred,
+        'n_test_samples': len(X_test)
+    }
+
+    # Print results
+    print(f"\nTest Set Size: {len(X_test)} samples")
+    print(f"\nOverall Metrics:")
+    print(f"  R² Score:    {r2:.6f}")
+    print(f"  MAE:         {mae:.6e}")
+    print(f"  RMSE:        {rmse:.6e}")
+    print(f"  Max Error:   {max_error:.6e}")
+
+    if len(per_output_r2) > 1:
+        print(f"\nPer-Output R² Scores:")
+        for i, r2_i in enumerate(per_output_r2):
+            print(f"  Output {i+1}: {r2_i:.6f}")
+
+    print(f"{'='*70}\n")
+
+    return results
+
+def create_adaptive_visualizations(Y_test, Y_pred, output_metadata=None, save_dir=None):
+    """
+    Create adaptive visualizations based on output data type.
+    Automatically detects whether outputs are:
+    - Scalars (report definitions)
+    - 2D field data (surfaces)
+    - 3D field data (volumes)
+    And creates appropriate visualizations.
+
+    Parameters
+    ----------
+    Y_test : ndarray
+        Actual test outputs (n_samples, n_outputs)
+    Y_pred : ndarray
+        Predicted outputs (n_samples, n_outputs)
+    output_metadata : dict, optional
+        Metadata about outputs including 'type', 'name', 'dimensions', etc.
+    save_dir : Path, optional
+        Directory to save plots
+    """
+    n_samples, n_outputs = Y_test.shape
+
+    print(f"\n{'='*70}")
+    print("CREATING ADAPTIVE VISUALIZATIONS")
+    print(f"{'='*70}")
+    print(f"Output shape: {Y_test.shape}")
+    print(f"  Samples: {n_samples}")
+    print(f"  Output dimension: {n_outputs}")
+
+    # Determine output type
+    if n_outputs <= 10:
+        # Likely scalar outputs (report definitions)
+        output_type = 'scalar'
+    elif n_outputs < 1000:
+        # Likely 2D surface data
+        output_type = '2d_field'
+    else:
+        # Likely 3D volume data
+        output_type = '3d_field'
+
+    print(f"  Detected type: {output_type}")
+    print(f"{'='*70}\n")
+
+    if output_type == 'scalar':
+        _create_scalar_plots(Y_test, Y_pred, output_metadata, save_dir)
+    elif output_type == '2d_field':
+        _create_2d_field_plots(Y_test, Y_pred, output_metadata, save_dir)
+    else:  # 3d_field
+        _create_3d_field_plots(Y_test, Y_pred, output_metadata, save_dir)

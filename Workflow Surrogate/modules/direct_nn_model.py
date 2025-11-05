@@ -471,7 +471,7 @@ class RealTimePlotter:
         # Create figure with subplots
         plt.ion()  # Interactive mode
         self.fig, self.axes = plt.subplots(2, 1, figsize=(10, 8))
-        self.fig.suptitle('Autoencoder Training Progress', fontsize=14, fontweight='bold')
+        self.fig.suptitle('Model Training Progress', fontsize=14, fontweight='bold')
 
         # Loss plot
         self.ax_loss = self.axes[0]
@@ -532,3 +532,4 @@ class RealTimePlotter:
         """Finalize plot and keep window open."""
         plt.ioff()
         print("\n[OK] Training plot window will remain open. Close it to continue.")
+        
