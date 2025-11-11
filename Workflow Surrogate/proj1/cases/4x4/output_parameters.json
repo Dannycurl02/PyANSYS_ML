@@ -1,0 +1,10 @@
+{
+  "mid-plane": [
+    "temperature",
+    "x-velocity"
+  ],
+  "fluid": [
+    "temperature",
+    "pressure"
+  ]
+}

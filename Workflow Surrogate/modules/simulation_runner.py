@@ -10,7 +10,13 @@ import json
 import itertools
 import time
 import sys
+import warnings
 from io import StringIO
+
+# Suppress PyFluent deprecation warnings for get_scalar_field_data
+# (The new get_field_data API requires complex request objects;
+# we'll continue using the simpler deprecated method for now)
+warnings.filterwarnings('ignore', message="'get_scalar_field_data' is deprecated")
 
 
 def run_simulations_menu(solver, setup_data, analysis, dataset_dir, ui_helpers):
@@ -36,8 +42,8 @@ def run_simulations_menu(solver, setup_data, analysis, dataset_dir, ui_helpers):
         ui_helpers.pause()
         return
 
-    outputs_dir = dataset_dir / "outputs"
-    outputs_dir.mkdir(parents=True, exist_ok=True)
+    dataset_output_dir = dataset_dir / "dataset"
+    dataset_output_dir.mkdir(parents=True, exist_ok=True)
 
     while True:
         ui_helpers.clear_screen()
@@ -47,7 +53,7 @@ def run_simulations_menu(solver, setup_data, analysis, dataset_dir, ui_helpers):
         print(f"Total Simulations Required: {analysis['total_input_combinations']}")
 
         # Count existing simulation results
-        existing_results = list(outputs_dir.glob("sim_*.npz"))
+        existing_results = list(dataset_output_dir.glob("sim_*.npz"))
         print(f"Completed Simulations: {len(existing_results)}")
 
         completeness = len(existing_results) / analysis['total_input_combinations'] * 100 if analysis['total_input_combinations'] > 0 else 0
@@ -100,7 +106,7 @@ def generate_doe_combinations(setup_data):
 
     for input_item in setup_data['model_inputs']:
         bc_name = input_item['name']
-        bc_type = input_item['category']
+        bc_type = input_item['type']  # Use 'type' (e.g., "Velocity Inlet"), not 'category'
         doe_params = doe_config.get(bc_name, {})
 
         for param_name, param_values in doe_params.items():
@@ -163,39 +169,65 @@ def apply_boundary_conditions(solver, bc_values):
             param_path = bc_info['param_path']
             value = bc_info['value']
 
-            # Get the BC object
+            # Get the BC object using dictionary-style access (like Field/Volume Surrogate)
             if hasattr(boundary_conditions, bc_type):
                 bc_container = getattr(boundary_conditions, bc_type)
                 if bc_name in bc_container:
                     bc_obj = bc_container[bc_name]
 
-                    # Navigate to parameter using path
+                    # Navigate to parameter using path - use direct attribute access chain
                     try:
-                        # Handle nested paths (e.g., 'momentum.velocity.vmag')
+                        # Build attribute chain: bc_obj.momentum.velocity_magnitude.value
                         path_parts = param_path.split('.')
                         target_obj = bc_obj
-                        for part in path_parts[:-1]:
+
+                        # Navigate through ALL parts to get to the parameter object
+                        for i, part in enumerate(path_parts):
                             if hasattr(target_obj, part):
                                 target_obj = getattr(target_obj, part)
                             else:
-                                print(f"  ⚠ Warning: Path '{part}' not found in {bc_name}")
-                                break
+                                # Try alternate names for velocity parameters
+                                if part == 'velocity_magnitude' and hasattr(target_obj, 'velocity'):
+                                    print(f"  Note: Using 'velocity' instead of 'velocity_magnitude' for {bc_name}")
+                                    target_obj = getattr(target_obj, 'velocity')
+                                elif part == 'velocity' and hasattr(target_obj, 'velocity_magnitude'):
+                                    print(f"  Note: Using 'velocity_magnitude' instead of 'velocity' for {bc_name}")
+                                    target_obj = getattr(target_obj, 'velocity_magnitude')
+                                else:
+                                    print(f"  ✗ Error: Path part '{part}' not found in {bc_name}")
+                                    print(f"     Full path attempted: {bc_name}.{param_path}")
+                                    if hasattr(target_obj, 'child_names'):
+                                        try:
+                                            available = target_obj.child_names
+                                            print(f"     Available: {available[:15] if len(available) > 15 else available}")
+                                        except:
+                                            pass
+                                    return False
 
-                        # Set the final parameter
-                        final_param = path_parts[-1]
-                        if hasattr(target_obj, final_param):
-                            param_obj = getattr(target_obj, final_param)
-                            if hasattr(param_obj, 'set_state'):
-                                param_obj.set_state(value)
-                            else:
-                                setattr(target_obj, final_param, value)
-                            print(f"  ✓ Set {bc_name}.{param_path} = {value}")
+                        # Now target_obj should have a .value attribute we can set
+                        if hasattr(target_obj, 'value'):
+                            # Set the new value (convert to float to match Field/Volume Surrogate)
+                            target_obj.value = float(value)
+
+                            # Simple confirmation - don't try to verify since Fluent returns internal objects
+                            print(f"  ✓ {bc_name}.{param_path} = {value}")
+
                         else:
-                            print(f"  ⚠ Warning: Parameter '{final_param}' not found in {bc_name}")
+                            print(f"  ✗ Error: {bc_name}.{param_path} has no .value attribute")
+                            print(f"     Object type: {type(target_obj).__name__}")
+                            return False
 
                     except Exception as e:
-                        print(f"  ✗ Error setting {bc_name}.{param_path}: {e}")
+                        print(f"  ✗ Exception setting {bc_name}.{param_path}: {e}")
+                        import traceback
+                        traceback.print_exc()
                         return False
+                else:
+                    print(f"  ✗ Error: BC '{bc_name}' not found in {bc_type}")
+                    return False
+            else:
+                print(f"  ✗ Error: BC type '{bc_type}' not found")
+                return False
 
         return True
 
@@ -209,6 +241,7 @@ def apply_boundary_conditions(solver, bc_values):
 def extract_field_data(solver, setup_data, dataset_dir):
     """
     Extract field data from configured output locations.
+    Handles surfaces (2D), cell zones (3D), and report definitions (scalar).
 
     Parameters
     ----------
@@ -240,47 +273,225 @@ def extract_field_data(solver, setup_data, dataset_dir):
         # Extract data from each configured output
         for output_item in setup_data['model_outputs']:
             output_name = output_item['name']
-            output_type = output_item['category']
+            output_type = output_item['type']
+            output_category = output_item['category']
 
             # Get configured parameters for this output
             params_to_extract = output_params.get(output_name, [])
+
+            # Report Definitions don't need configuration - extract automatically
+            if output_category == "Report Definition":
+                print(f"  Extracting from {output_name} ({output_category})...")
+                try:
+                    # Get report definition value using compute method
+                    result = solver.settings.solution.report_definitions.compute(report_defs=[output_name])
+
+                    # Extract value from result structure: [{'report-name': [value, ...]}]
+                    report_value = result[0][output_name][0]
+
+                    # Use generic 'value' as field name for report definitions
+                    # Or use first configured param if available
+                    param_name = params_to_extract[0] if params_to_extract else 'value'
+                    key = f"{output_name}|{param_name}"
+                    output_data[key] = np.array([report_value])
+                    print(f"    ✓ {param_name}: {report_value:.6f}")
+
+                except Exception as e:
+                    print(f"    ✗ Error extracting report definition: {e}")
+                continue
+
+            # For other output types, configuration is required
             if not params_to_extract:
                 print(f"  ⚠ Warning: No parameters configured for {output_name}, skipping")
                 continue
 
-            print(f"  Extracting from {output_name} ({output_type})...")
+            print(f"  Extracting from {output_name} ({output_category})...")
+            print(f"    Parameters: {', '.join(params_to_extract)}")
 
-            # Extract each parameter
-            for param_name in params_to_extract:
-                try:
-                    # Use PyFluent field data API to get field values
-                    field_data = solver.fields.field_data
+            if output_category == "Cell Zone":
+                # Extract volume (3D) data using solution_variable_data
+                solution_data = solver.fields.solution_variable_data
 
-                    # Get scalar field data for this surface/zone
-                    data = field_data.get_scalar_field_data(
-                        field_name=param_name,
-                        surfaces=[output_name]
-                    )
-
-                    # Store the data
-                    key = f"{output_name}|{param_name}"
-                    output_data[key] = np.array(data)
-                    print(f"    ✓ {param_name}: {len(data)} points")
-
-                except Exception as e:
-                    print(f"    ✗ Error extracting {param_name}: {e}")
-                    # Try alternative method
+                # Extract cell centroids first (only once per zone)
+                coord_key = f"{output_name}|coordinates"
+                if coord_key not in output_data:
                     try:
-                        # Get surface data using alternative API
-                        data = field_data.get_surface_data(
-                            surface_name=output_name,
-                            field_name=param_name
+                        print(f"  Extracting cell centroids...")
+                        centroid_dict = solution_data.get_data(
+                            zone_names=[output_name],
+                            variable_name='SV_CENTROID',
+                            domain_name='mixture'
                         )
+
+                        # SV_CENTROID returns flat array [x1,y1,z1,x2,y2,z2,...]
+                        centroids_flat = np.array(centroid_dict[output_name])
+
+                        # Reshape to (n_cells, 3)
+                        n_cells = len(centroids_flat) // 3
+                        coordinates = centroids_flat.reshape((n_cells, 3))
+
+                        output_data[coord_key] = coordinates
+                        print(f"    ✓ Centroids: {len(coordinates)} cells")
+                    except Exception as e:
+                        print(f"    ✗ Error extracting centroids: {e}")
+
+                # Extract field parameters
+                for param_name in params_to_extract:
+                    try:
+                        # Special handling for velocity-magnitude (needs to be computed from components)
+                        if param_name == 'velocity-magnitude':
+                            # Extract velocity components
+                            u_dict = solution_data.get_data(
+                                zone_names=[output_name],
+                                variable_name='SV_U',
+                                domain_name='mixture'
+                            )
+                            v_dict = solution_data.get_data(
+                                zone_names=[output_name],
+                                variable_name='SV_V',
+                                domain_name='mixture'
+                            )
+                            w_dict = solution_data.get_data(
+                                zone_names=[output_name],
+                                variable_name='SV_W',
+                                domain_name='mixture'
+                            )
+
+                            # Compute magnitude
+                            u = np.array(u_dict[output_name])
+                            v = np.array(v_dict[output_name])
+                            w = np.array(w_dict[output_name])
+                            velocity_mag = np.sqrt(u**2 + v**2 + w**2)
+
+                            # Store the data
+                            key = f"{output_name}|{param_name}"
+                            output_data[key] = velocity_mag
+                            print(f"    ✓ {param_name}: {len(velocity_mag)} cells (computed from U,V,W)")
+                            continue
+
+                        # Map parameter names to Fluent solution variable names (SV_*)
+                        fluent_var_map = {
+                            'temperature': 'SV_T',
+                            'pressure': 'SV_P',
+                            'density': 'SV_DENSITY',
+                            'x-velocity': 'SV_U',
+                            'y-velocity': 'SV_V',
+                            'z-velocity': 'SV_W',
+                            'k': 'SV_K',
+                            'omega': 'SV_O',
+                            'turbulent-viscosity': 'SV_MU_T',
+                            'enthalpy': 'SV_H',
+                            'wall-distance': 'SV_WALL_DIST'
+                        }
+
+                        fluent_var = fluent_var_map.get(param_name, param_name.upper())
+
+                        # Get available variables for this zone first
+                        try:
+                            solution_var_info = solver.fields.solution_variable_info
+                            zone_info = solution_var_info.get_variables_info(
+                                zone_names=[output_name],
+                                domain_name='mixture'
+                            )
+                            available_vars = zone_info.solution_variables
+
+                            if fluent_var not in available_vars:
+                                print(f"    ⚠ Variable {fluent_var} not available for zone {output_name}")
+                                print(f"      Available variables: {', '.join(available_vars)}")
+                                continue
+                        except Exception as info_error:
+                            print(f"    ⚠ Could not query available variables: {info_error}")
+                            # Continue anyway and let get_data raise error if variable doesn't exist
+
+                        # Get volume data
+                        data_dict = solution_data.get_data(
+                            zone_names=[output_name],
+                            variable_name=fluent_var,
+                            domain_name='mixture'
+                        )
+
+                        # Extract data for the zone
+                        zone_data = np.array(data_dict[output_name])
+
+                        # Store the data
                         key = f"{output_name}|{param_name}"
-                        output_data[key] = np.array(data)
-                        print(f"    ✓ {param_name}: {len(data)} points (alternative method)")
-                    except:
-                        print(f"    ✗ Failed to extract {param_name} from {output_name}")
+                        output_data[key] = zone_data
+                        print(f"    ✓ {param_name}: {len(zone_data)} cells")
+
+                    except Exception as e:
+                        print(f"    ✗ Error extracting {param_name}: {e}")
+
+            else:
+                # Extract surface (2D) data using field_data
+                field_data = solver.fields.field_data
+
+                # Extract coordinates first (only once per surface)
+                coord_key = f"{output_name}|coordinates"
+                if coord_key not in output_data:
+                    try:
+                        print(f"  Extracting coordinates...")
+                        x_dict = field_data.get_scalar_field_data(
+                            field_name='x-coordinate',
+                            surfaces=[output_name],
+                            node_value=False
+                        )
+                        y_dict = field_data.get_scalar_field_data(
+                            field_name='y-coordinate',
+                            surfaces=[output_name],
+                            node_value=False
+                        )
+                        z_dict = field_data.get_scalar_field_data(
+                            field_name='z-coordinate',
+                            surfaces=[output_name],
+                            node_value=False
+                        )
+
+                        # Extract data - handle both dict and direct array formats
+                        def extract_data(data_dict, key):
+                            surface_data = data_dict[key]
+                            if isinstance(surface_data, dict) and 'scalar-field' in surface_data:
+                                return np.array(surface_data['scalar-field'])
+                            else:
+                                return np.array(surface_data)
+
+                        x_coords = extract_data(x_dict, output_name)
+                        y_coords = extract_data(y_dict, output_name)
+                        z_coords = extract_data(z_dict, output_name)
+
+                        # Stack into (n_points, 3) array
+                        coordinates = np.stack([x_coords, y_coords, z_coords], axis=1)
+                        output_data[coord_key] = coordinates
+                        print(f"    ✓ Coordinates: {len(coordinates)} points")
+                    except Exception as e:
+                        print(f"    ✗ Error extracting coordinates: {e}")
+
+                # Extract field parameters
+                for param_name in params_to_extract:
+                    try:
+                        # Get scalar field data for this surface
+                        data_dict = field_data.get_scalar_field_data(
+                            field_name=param_name,
+                            surfaces=[output_name],
+                            node_value=False
+                        )
+
+                        # Extract data - handle both dict and direct array formats
+                        def extract_data(data_dict, key):
+                            surface_data = data_dict[key]
+                            if isinstance(surface_data, dict) and 'scalar-field' in surface_data:
+                                return np.array(surface_data['scalar-field'])
+                            else:
+                                return np.array(surface_data)
+
+                        surface_data = extract_data(data_dict, output_name)
+
+                        # Store the data
+                        key = f"{output_name}|{param_name}"
+                        output_data[key] = surface_data
+                        print(f"    ✓ {param_name}: {len(surface_data)} points")
+
+                    except Exception as e:
+                        print(f"    ✗ Error extracting {param_name}: {e}")
 
         return output_data if output_data else None
 
@@ -357,12 +568,14 @@ def run_single_simulation(solver, setup_data, dataset_dir, ui_helpers):
         sys.stdout = StringIO()
         sys.stderr = StringIO()
 
-        solver.settings.solution.initialization.hybrid_initialize()
+        # Use standard initialization (same as Field/Volume/Scalar Surrogate)
+        solver.settings.solution.initialization.initialization_type = "standard"
+        solver.settings.solution.initialization.standard_initialize()
 
         # Restore output
         sys.stdout = old_stdout
         sys.stderr = old_stderr
-        print("  ✓ Initialized")
+        print("  ✓ Initialized (standard)")
     except Exception as e:
         # Restore output on error
         sys.stdout = old_stdout
@@ -409,7 +622,7 @@ def run_single_simulation(solver, setup_data, dataset_dir, ui_helpers):
         return
 
     # Save results
-    output_file = dataset_dir / "outputs" / f"sim_{sim_id:04d}.npz"
+    output_file = dataset_dir / "dataset" / f"sim_{sim_id:04d}.npz"
     np.savez_compressed(output_file, **output_data)
     print(f"\n✓ Results saved to: {output_file.name}")
     print(f"  Fields saved: {len(output_data)}")
@@ -451,7 +664,7 @@ def run_batch_simulations(solver, setup_data, analysis, dataset_dir, ui_helpers)
     print("BATCH SIMULATION")
     print("="*70)
 
-    outputs_dir = dataset_dir / "outputs"
+    outputs_dir = dataset_dir / "dataset"
     outputs_dir.mkdir(exist_ok=True)
 
     start_time = time.time()
@@ -485,7 +698,8 @@ def run_batch_simulations(solver, setup_data, analysis, dataset_dir, ui_helpers)
             sys.stdout = StringIO()
             sys.stderr = StringIO()
 
-            solver.settings.solution.initialization.hybrid_initialize()
+            solver.settings.solution.initialization.initialization_type = "standard"
+            solver.settings.solution.initialization.standard_initialize()
 
             sys.stdout = old_stdout
             sys.stderr = old_stderr
@@ -599,7 +813,7 @@ def run_remaining_simulations(solver, setup_data, analysis, dataset_dir, existin
     print("RESUMING BATCH SIMULATION")
     print("="*70)
 
-    outputs_dir = dataset_dir / "outputs"
+    outputs_dir = dataset_dir / "dataset"
     start_time = time.time()
     successful = 0
     failed = 0
@@ -624,7 +838,8 @@ def run_remaining_simulations(solver, setup_data, analysis, dataset_dir, existin
             sys.stdout = StringIO()
             sys.stderr = StringIO()
 
-            solver.settings.solution.initialization.hybrid_initialize()
+            solver.settings.solution.initialization.initialization_type = "standard"
+            solver.settings.solution.initialization.standard_initialize()
 
             sys.stdout = old_stdout
             sys.stderr = old_stderr
@@ -746,7 +961,7 @@ def extract_current_solution(solver, setup_data, dataset_dir, ui_helpers):
             return
 
         # Save results
-        outputs_dir = dataset_dir / "outputs"
+        outputs_dir = dataset_dir / "dataset"
         outputs_dir.mkdir(exist_ok=True)
         output_file = outputs_dir / f"sim_{sim_id_int:04d}.npz"
 

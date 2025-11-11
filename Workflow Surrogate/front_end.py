@@ -2,7 +2,7 @@
 """
 Workflow Surrogate - Interactive Fluent Integration
 ====================================================
-Complete workflow for POD-based surrogate model creation from CFD data.
+Complete workflow for neural network surrogate model creation from CFD data.
 """
 
 import sys
@@ -19,8 +19,8 @@ from modules import fluent_interface as fi
 from modules import project_manager as pm
 from modules import output_parameters as op
 from modules import simulation_runner as sr
-from modules import model_trainer as mt
-from modules import data_visualizer as dv
+from modules import multi_model_trainer as mt
+from modules import multi_model_visualizer as dv
 from modules import project_system as ps
 
 # ============================================================
@@ -118,19 +118,13 @@ def project_main_menu(project):
         print("="*70)
         print(f"  Location: {project.project_path}")
         print(f"  Created: {project.info['created']}")
-        print(f"\n  Simulation Setups: {len(project.datasets)}")
-        if project.datasets:
-            for dataset in project.datasets:
-                status = f"{dataset['completeness']:.0f}% complete"
-                print(f"    - {dataset['name']:30s} [{status}]")
-        else:
-            print("    (none)")
-
-        print(f"\n  Trained Models: {len(project.models)}")
-        if project.models:
-            for model in project.models:
-                latent_info = model.get('latent_size', model.get('pod_modes', 'N/A'))
-                print(f"    - {model['name']:30s} [Latent: {latent_info}]")
+        print(f"\n  Cases: {len(project.cases)}")
+        if project.cases:
+            for case in project.cases:
+                status = f"{case['completeness']:.0f}% complete"
+                num_models = case.get('num_models', 0)
+                models_str = f", {num_models} models" if num_models > 0 else ""
+                print(f"    - {case['name']:30s} [{status}{models_str}]")
         else:
             print("    (none)")
 
@@ -186,7 +180,7 @@ def test_io_and_simulations_menu(project):
             print("\n○ No Fluent session")
 
         print(f"\nProject: {project.info['project_name']}")
-        print(f"Simulation Setups: {len(project.datasets)}")
+        print(f"Cases: {len(project.cases)}")
 
         print(f"\n{'='*70}")
         print("  [1] Open Fluent Case File")
@@ -286,8 +280,8 @@ def configure_new_dataset(project, solver):
         ui_helpers.pause()
         return
 
-    # Check if dataset already exists
-    dataset_dir = project.sim_datasets_dir / dataset_name
+    # Check if case already exists
+    dataset_dir = project.cases_dir / dataset_name
     if dataset_dir.exists():
         overwrite = input(f"\n⚠ Dataset '{dataset_name}' already exists. Overwrite? [y/N]: ").strip().lower()
         if overwrite != 'y':
@@ -343,25 +337,25 @@ def edit_existing_dataset(project, solver):
     ui_helpers.clear_screen()
     ui_helpers.print_header("EDIT EXISTING DATASET I/O")
 
-    if not project.datasets:
+    if not project.cases:
         print("\n✗ No datasets found in project")
         ui_helpers.pause()
         return
 
     # List datasets
     print("\nAvailable Datasets:")
-    for i, dataset in enumerate(project.datasets, 1):
+    for i, dataset in enumerate(project.cases, 1):
         print(f"  [{i}] {dataset['name']}")
 
     print(f"\n  [0] Cancel")
     print("="*70)
 
-    choice = ui_helpers.get_choice(len(project.datasets))
+    choice = ui_helpers.get_choice(len(project.cases))
 
     if choice == 0:
         return
 
-    dataset = project.datasets[choice - 1]
+    dataset = project.cases[choice - 1]
     dataset_dir = dataset['path']
     setup_file = dataset['setup_file']
 
@@ -411,26 +405,26 @@ def run_simulations_for_dataset(project, solver):
     ui_helpers.clear_screen()
     ui_helpers.print_header("RUN SIMULATIONS FOR DATASET")
 
-    if not project.datasets:
+    if not project.cases:
         print("\n✗ No datasets found in project")
         ui_helpers.pause()
         return
 
     # List datasets
     print("\nAvailable Datasets:")
-    for i, dataset in enumerate(project.datasets, 1):
+    for i, dataset in enumerate(project.cases, 1):
         status = f"{dataset['completeness']:.0f}% complete"
         print(f"  [{i}] {dataset['name']:30s} [{status}] ({dataset['num_simulations']}/{dataset['total_required']})")
 
     print(f"\n  [0] Cancel")
     print("="*70)
 
-    choice = ui_helpers.get_choice(len(project.datasets))
+    choice = ui_helpers.get_choice(len(project.cases))
 
     if choice == 0:
         return
 
-    dataset = project.datasets[choice - 1]
+    dataset = project.cases[choice - 1]
     dataset_dir = dataset['path']
     setup_file = dataset['setup_file']
 
@@ -567,7 +561,8 @@ def input_output_setup_menu(solver, selected_inputs, selected_outputs, output_pa
                         }
                         for item in selected_outputs
                     ],
-                    'doe_configuration': doe_parameters
+                    'doe_configuration': doe_parameters,
+                    'case_file': getattr(solver, '_case_file_path', '')  # Store case file path
                 }
 
                 from modules import doe_setup as doe
@@ -592,7 +587,7 @@ def model_setup_and_training_menu(project):
     ui_helpers.clear_screen()
     ui_helpers.print_header("MODEL SETUP & TRAINING")
 
-    if not project.datasets:
+    if not project.cases:
         print("\n✗ No simulation datasets found in project")
         print("  Please create a setup and simulate first (Test I/O & Simulations menu)")
         ui_helpers.pause()
@@ -600,19 +595,19 @@ def model_setup_and_training_menu(project):
 
     # List datasets
     print("\nAvailable Simulation Datasets:")
-    for i, dataset in enumerate(project.datasets, 1):
+    for i, dataset in enumerate(project.cases, 1):
         status = f"{dataset['completeness']:.0f}% complete"
         print(f"  [{i}] {dataset['name']:30s} [{status}]")
 
     print(f"\n  [0] Back")
     print("="*70)
 
-    choice = ui_helpers.get_choice(len(project.datasets))
+    choice = ui_helpers.get_choice(len(project.cases))
 
     if choice == 0:
         return
 
-    dataset = project.datasets[choice - 1]
+    dataset = project.cases[choice - 1]
     dataset_dir = dataset['path']
 
     # Check completeness
@@ -623,7 +618,7 @@ def model_setup_and_training_menu(project):
             return
 
     # Enter training menu
-    mt.model_training_menu(dataset_dir, ui_helpers)
+    mt.train_model_menu(dataset_dir, ui_helpers)
 
     # Refresh project
     project.scan()
@@ -641,7 +636,7 @@ def data_visualization_model_select_menu(project, ui_helpers):
     ui_helpers.clear_screen()
     ui_helpers.print_header("DATA VISUALIZATION")
 
-    if not project.models:
+    if not project.cases:
         print("\n✗ No trained models found in project")
         print("  Please train a model first")
         ui_helpers.pause()
@@ -649,22 +644,22 @@ def data_visualization_model_select_menu(project, ui_helpers):
 
     # List datasets
     print("\nAvailable Models:")
-    for i, dataset in enumerate(project.models, 1):
+    for i, dataset in enumerate(project.cases, 1):
         print(f"  [{i}] {dataset['name']:30s}")
 
     print(f"\n  [0] Back")
     print("="*70)
 
-    choice = ui_helpers.get_choice(len(project.models))
+    choice = ui_helpers.get_choice(len(project.cases))
 
     if choice == 0:
         return
 
-    model = project.models[choice - 1]
-    training_dir = model['path']
+    case = project.cases[choice - 1]
+    case_dir = case['path']
 
     # Enter Visualize menu
-    dv.data_visualization_menu(training_dir, ui_helpers)
+    dv.visualization_menu(case_dir, ui_helpers)
 
     # Refresh project
     project.scan()
@@ -683,8 +678,8 @@ def manage_project_data_menu(project):
         ui_helpers.print_header("MANAGE PROJECT DATA")
 
         print(f"\nProject: {project.info['project_name']}")
-        print(f"Simulation Setups: {len(project.datasets)}")
-        print(f"Trained Models: {len(project.models)}")
+        print(f"Cases: {len(project.cases)}")
+        print(f"Trained Models: {len(project.cases)}")
 
         print(f"\n{'='*70}")
         print("  [1] Delete Simulation Setup")
@@ -709,31 +704,31 @@ def delete_dataset_menu(project):
     ui_helpers.clear_screen()
     ui_helpers.print_header("DELETE SIMULATION SETUP")
 
-    if not project.datasets:
+    if not project.cases:
         print("\n✗ No datasets found in project")
         ui_helpers.pause()
         return
 
     # List datasets
     print("\nAvailable Datasets:")
-    for i, dataset in enumerate(project.datasets, 1):
+    for i, dataset in enumerate(project.cases, 1):
         print(f"  [{i}] {dataset['name']}")
 
     print(f"\n  [0] Cancel")
     print("="*70)
 
-    choice = ui_helpers.get_choice(len(project.datasets))
+    choice = ui_helpers.get_choice(len(project.cases))
 
     if choice == 0:
         return
 
-    dataset = project.datasets[choice - 1]
+    dataset = project.cases[choice - 1]
 
     # Confirm deletion
     confirm = input(f"\n⚠ Delete dataset '{dataset['name']}'? This cannot be undone. [y/N]: ").strip().lower()
 
     if confirm == 'y':
-        if project.delete_dataset(dataset['name']):
+        if project.delete_case(dataset['name']):
             print(f"\n✓ Dataset '{dataset['name']}' deleted successfully")
         else:
             print(f"\n✗ Failed to delete dataset '{dataset['name']}'")
@@ -742,38 +737,78 @@ def delete_dataset_menu(project):
 
 
 def delete_model_menu(project):
-    """Delete a trained model."""
+    """Delete trained models from a case."""
     ui_helpers.clear_screen()
-    ui_helpers.print_header("DELETE TRAINED MODEL")
+    ui_helpers.print_header("DELETE TRAINED MODELS")
 
-    if not project.models:
-        print("\n✗ No models found in project")
+    if not project.cases:
+        print("\n✗ No cases found in project")
         ui_helpers.pause()
         return
 
-    # List models
-    print("\nAvailable Models:")
-    for i, model in enumerate(project.models, 1):
-        print(f"  [{i}] {model['name']}")
+    # First, select a case
+    print("\nSelect Case:")
+    for i, case in enumerate(project.cases, 1):
+        num_models = case.get('num_models', 0)
+        print(f"  [{i}] {case['name']} ({num_models} models)")
 
     print(f"\n  [0] Cancel")
     print("="*70)
 
-    choice = ui_helpers.get_choice(len(project.models))
+    choice = ui_helpers.get_choice(len(project.cases))
 
     if choice == 0:
         return
 
-    model = project.models[choice - 1]
+    case = project.cases[choice - 1]
+    models_dir = case['path'] / "models"
+
+    if not models_dir.exists():
+        print(f"\n✗ No models directory found in case '{case['name']}'")
+        ui_helpers.pause()
+        return
+
+    # List models in this case
+    model_files = list(models_dir.glob("*.h5"))
+
+    if not model_files:
+        print(f"\n✗ No models found in case '{case['name']}'")
+        ui_helpers.pause()
+        return
+
+    print(f"\nModels in '{case['name']}':")
+    for i, model_file in enumerate(model_files, 1):
+        print(f"  [{i}] {model_file.stem}")
+
+    print(f"  [0] Cancel")
+
+    model_choice = ui_helpers.get_choice(len(model_files))
+
+    if model_choice == 0:
+        return
+
+    selected_model = model_files[model_choice - 1]
 
     # Confirm deletion
-    confirm = input(f"\n⚠ Delete model '{model['name']}'? This cannot be undone. [y/N]: ").strip().lower()
+    confirm = input(f"\n⚠ Delete model '{selected_model.stem}'? This cannot be undone. [y/N]: ").strip().lower()
 
     if confirm == 'y':
-        if project.delete_model(model['name']):
-            print(f"\n✓ Model '{model['name']}' deleted successfully")
-        else:
-            print(f"\n✗ Failed to delete model '{model['name']}'")
+        try:
+            # Delete both .h5 and .npz files
+            selected_model.unlink()
+            npz_file = selected_model.with_suffix('.npz')
+            if npz_file.exists():
+                npz_file.unlink()
+
+            # Delete metadata if exists
+            metadata_file = models_dir / f"{selected_model.stem}_metadata.json"
+            if metadata_file.exists():
+                metadata_file.unlink()
+
+            print(f"\n✓ Model '{selected_model.stem}' deleted successfully")
+            project.scan()  # Refresh
+        except Exception as e:
+            print(f"\n✗ Failed to delete model: {e}")
 
     ui_helpers.pause()
 

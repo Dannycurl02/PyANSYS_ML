@@ -394,12 +394,9 @@ def create_dataset_structure(dataset_dir, analysis, setup_data, ui_helpers):
         # Create main dataset directory
         dataset_dir.mkdir(exist_ok=True)
 
-        # Create subdirectories
-        (dataset_dir / "inputs").mkdir(exist_ok=True)
-        (dataset_dir / "outputs").mkdir(exist_ok=True)
-        (dataset_dir / "raw_fluent_data").mkdir(exist_ok=True)
-        (dataset_dir / "pod_modes").mkdir(exist_ok=True)
-        (dataset_dir / "trained_models").mkdir(exist_ok=True)
+        # Create dataset directory for simulation outputs
+        (dataset_dir / "dataset").mkdir(exist_ok=True)
+
 
         # Create README
         readme_path = dataset_dir / "README.txt"
@@ -410,21 +407,7 @@ def create_dataset_structure(dataset_dir, analysis, setup_data, ui_helpers):
             f.write(f"Required Simulations: {analysis['total_input_combinations']}\n")
             f.write(f"Input Variables: {analysis['num_inputs']}\n")
             f.write(f"Output Locations: {analysis['num_outputs']}\n\n")
-            f.write("Directories:\n")
-            f.write("  - inputs/          : DOE input parameters (CSV)\n")
-            f.write("  - outputs/         : Simulation output data (NPZ)\n")
-            f.write("  - raw_fluent_data/ : Raw Fluent export files\n")
-            f.write("  - pod_modes/       : POD basis functions\n")
-            f.write("  - trained_models/  : Trained neural networks\n")
 
-        print("\n✓ Dataset structure created successfully!")
-        print(f"\n  {dataset_dir}/")
-        print(f"  ├── inputs/")
-        print(f"  ├── outputs/")
-        print(f"  ├── raw_fluent_data/")
-        print(f"  ├── pod_modes/")
-        print(f"  ├── trained_models/")
-        print(f"  └── README.txt")
 
     except Exception as e:
         print(f"\n✗ Error creating dataset structure: {e}")

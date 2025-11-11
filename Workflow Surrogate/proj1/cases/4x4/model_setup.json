@@ -1,0 +1,67 @@
+{
+  "timestamp": "2025-11-11 13:09:46",
+  "model_inputs": [
+    {
+      "name": "hot-inlet",
+      "type": "Velocity Inlet",
+      "category": "Boundary Condition",
+      "doe_parameters": {
+        "momentum.velocity_magnitude": [
+          0.1,
+          0.4,
+          0.7,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "cold-inlet",
+      "type": "Velocity Inlet",
+      "category": "Boundary Condition",
+      "doe_parameters": {
+        "momentum.velocity_magnitude": [
+          0.1,
+          0.4,
+          0.7,
+          1.0
+        ]
+      }
+    }
+  ],
+  "model_outputs": [
+    {
+      "name": "mid-plane",
+      "type": "Created Surface",
+      "category": "Surface"
+    },
+    {
+      "name": "fluid",
+      "type": "Fluid",
+      "category": "Cell Zone"
+    },
+    {
+      "name": "avg-outlet-temp",
+      "type": "Surface",
+      "category": "Report Definition"
+    }
+  ],
+  "doe_configuration": {
+    "hot-inlet": {
+      "momentum.velocity_magnitude": [
+        0.1,
+        0.4,
+        0.7,
+        1.0
+      ]
+    },
+    "cold-inlet": {
+      "momentum.velocity_magnitude": [
+        0.1,
+        0.4,
+        0.7,
+        1.0
+      ]
+    }
+  },
+  "case_file": "C:\\Users\\danny\\OneDrive - University of Arkansas\\Research\\Learning\\PyANSYS_ML\\Workflow Surrogate\\elbow.cas.h5"
+}

@@ -99,6 +99,9 @@ def open_case_file(user_settings, project_dir, ui_helpers):
 
         fluent_log_file.close()
 
+        # Store case file path as attribute for later reference
+        solver._case_file_path = str(case_file)
+
         return solver
 
     except Exception as e:
@@ -204,6 +207,9 @@ def open_recent_project(project_path, user_settings, project_dir, ui_helpers):
         print(f"\n✓ Case file loaded successfully")
 
         fluent_log_file.close()
+
+        # Store case file path as attribute for later reference
+        solver._case_file_path = str(project_path)
 
         # Update recent case files (move to top)
         user_settings.add_recent_case_file(project_path)

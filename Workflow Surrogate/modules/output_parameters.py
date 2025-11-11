@@ -6,25 +6,42 @@ for each surface/cell zone.
 """
 
 
-def get_available_field_variables():
+def get_available_field_variables(output_category='Surface'):
     """
     Get list of common field variables available in Fluent.
+
+    Parameters
+    ----------
+    output_category : str
+        'Surface' for 2D surface data, 'Cell Zone' for 3D volume data
 
     Returns
     -------
     dict
         Dictionary of variable categories and their variables
     """
-    return {
-        'Pressure': ['absolute-pressure', 'pressure-coefficient', 'dynamic-pressure', 'total-pressure'],
-        'Velocity': ['velocity-magnitude', 'x-velocity', 'y-velocity', 'z-velocity', 'radial-velocity', 'axial-velocity'],
-        'Temperature': ['temperature', 'total-temperature'],
-        'Density': ['density'],
-        'Turbulence': ['k', 'epsilon', 'omega', 'turb-kinetic-energy', 'turb-diss-rate', 'turbulent-viscosity'],
-        'Wall': ['wall-shear', 'y-plus', 'wall-temperature', 'heat-transfer-coef'],
-        'Species': ['mass-fraction', 'mole-fraction'],
-        'Vorticity': ['vorticity-magnitude', 'x-vorticity', 'y-vorticity', 'z-vorticity']
-    }
+    if output_category == 'Cell Zone':
+        # Variables available for cell zones (3D volumes) using SV_ variables
+        return {
+            'Pressure': ['pressure'],
+            'Velocity': ['x-velocity', 'y-velocity', 'z-velocity'],
+            'Temperature': ['temperature'],
+            'Density': ['density'],
+            'Turbulence': ['k', 'omega', 'turbulent-viscosity'],
+            'Other': ['enthalpy', 'wall-distance']
+        }
+    else:
+        # Variables available for surfaces (2D) using field names
+        return {
+            'Pressure': ['absolute-pressure', 'pressure-coefficient', 'dynamic-pressure', 'total-pressure'],
+            'Velocity': ['velocity-magnitude', 'x-velocity', 'y-velocity', 'z-velocity', 'radial-velocity', 'axial-velocity'],
+            'Temperature': ['temperature', 'total-temperature'],
+            'Density': ['density'],
+            'Turbulence': ['k', 'epsilon', 'omega', 'turb-kinetic-energy', 'turb-diss-rate', 'turbulent-viscosity'],
+            'Wall': ['wall-shear', 'y-plus', 'wall-temperature', 'heat-transfer-coef'],
+            'Species': ['mass-fraction', 'mole-fraction'],
+            'Vorticity': ['vorticity-magnitude', 'x-vorticity', 'y-vorticity', 'z-vorticity']
+        }
 
 
 def setup_output_parameters(selected_outputs, output_params, ui_helpers):
@@ -51,13 +68,6 @@ def setup_output_parameters(selected_outputs, output_params, ui_helpers):
         ui_helpers.pause()
         return output_params
 
-    # Get available field variables
-    field_vars = get_available_field_variables()
-    all_vars = []
-    for category, vars_list in field_vars.items():
-        for var in vars_list:
-            all_vars.append({'name': var, 'category': category})
-
     while True:
         ui_helpers.clear_screen()
         ui_helpers.print_header("CONFIGURE OUTPUT PARAMETERS")
@@ -65,8 +75,12 @@ def setup_output_parameters(selected_outputs, output_params, ui_helpers):
         print("\nOUTPUT LOCATIONS:")
         print("="*70)
         for i, output in enumerate(selected_outputs, 1):
-            num_params = len(output_params.get(output['name'], []))
-            status = f"({num_params} parameters)" if num_params > 0 else "(not configured)"
+            # Check if this is a Report Definition (pre-configured in Fluent)
+            if output.get('category') == 'Report Definition':
+                status = "(pre-configured)"
+            else:
+                num_params = len(output_params.get(output['name'], []))
+                status = f"({num_params} parameters)" if num_params > 0 else "(not configured)"
             print(f"  [{i:2d}] {output['name']:30s} {status}")
         print("="*70)
 
@@ -84,19 +98,41 @@ def setup_output_parameters(selected_outputs, output_params, ui_helpers):
             if 0 <= idx < len(selected_outputs):
                 output = selected_outputs[idx]
 
+                # Check if this is a Report Definition
+                if output.get('category') == 'Report Definition':
+                    ui_helpers.clear_screen()
+                    ui_helpers.print_header(f"OUTPUT: {output['name']}")
+                    print(f"\n✓ Report Definitions are pre-configured in Fluent.")
+                    print(f"  This output will extract the value defined in the report.")
+                    print(f"\n  Type: {output['type']}")
+                    print(f"  Category: {output['category']}")
+
+                    # Automatically set 'temperature' as the parameter for report definitions
+                    # (This is just a placeholder - the actual field is configured in Fluent)
+                    if output['name'] not in output_params:
+                        output_params[output['name']] = ['temperature']
+
+                    ui_helpers.pause()
+                    continue
+
                 # Initialize if not exists
                 if output['name'] not in output_params:
                     output_params[output['name']] = []
 
-                # Configure parameters for this output
+                # Get available field variables based on output category
+                output_category = output.get('category', 'Surface')
+                field_vars = get_available_field_variables(output_category)
+
+                # Configure parameters for this output (only for Surfaces and Cell Zones)
                 while True:
                     ui_helpers.clear_screen()
                     ui_helpers.print_header(f"OUTPUT PARAMETERS: {output['name']}")
+                    print(f"Category: {output_category}\n")
 
                     # Show selected parameters
                     selected_params = output_params.get(output['name'], [])
                     if selected_params:
-                        print("\n" + "="*70)
+                        print("="*70)
                         print("SELECTED PARAMETERS:")
                         print("="*70)
                         for param in selected_params:
