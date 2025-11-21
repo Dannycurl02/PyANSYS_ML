@@ -126,19 +126,24 @@ class FieldNNModel:
 
         print(f"\n[4/4] Training (epochs={epochs})...")
 
-        # Callbacks - more aggressive early stopping to prevent overfitting
+        # Callbacks - relaxed for better convergence
+        # For small datasets, be very patient
+        # Monitor 'loss' when no validation split, otherwise 'val_loss'
+        monitor_metric = 'loss' if validation_split == 0.0 else 'val_loss'
+
         early_stop = keras.callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=15,  # Reduced from 50 to stop earlier
+            monitor=monitor_metric,
+            patience=80,  # Very patient for small datasets
             restore_best_weights=True,
-            min_delta=1e-6  # Stop if improvement is less than this
+            min_delta=1e-7,  # More sensitive threshold
+            start_from_epoch=30  # Don't start checking until epoch 30
         )
 
         reduce_lr = keras.callbacks.ReduceLROnPlateau(
-            monitor='val_loss',
+            monitor=monitor_metric,
             factor=0.5,
-            patience=8,  # Reduced from 20
-            min_lr=1e-6
+            patience=15,  # Increased for better convergence
+            min_lr=1e-7
         )
 
         # Train
@@ -146,13 +151,14 @@ class FieldNNModel:
             params_scaled, modes_scaled,
             validation_split=validation_split,
             epochs=epochs,
-            batch_size=max(8, len(parameters) // 4),  # Minimum 8 for stable training
+            batch_size=8,  # Fixed batch size for stable training
             callbacks=[early_stop, reduce_lr],
             verbose=verbose
         )
 
         print(f"\n✓ Training complete!")
-        print(f"  Best val_loss: {min(history.history['val_loss']):.6f}")
+        if 'val_loss' in history.history:
+            print(f"  Best val_loss: {min(history.history['val_loss']):.6f}")
         print(f"  Stopped at epoch: {len(history.history['loss'])}")
 
         # Store history

@@ -47,10 +47,12 @@ def detect_output_type(data_shape):
         return '1D', 0
     elif n_points <= 10000:
         # Medium size - likely 2D cut plane
-        return '2D', min(10, n_points // 100)
+        # Use fewer modes - will be auto-adjusted based on n_samples
+        return '2D', min(8, n_points // 100)
     else:
         # Large size - likely 3D volume
-        return '3D', min(20, n_points // 1000)
+        # Use fewer modes - will be auto-adjusted based on n_samples
+        return '3D', min(12, n_points // 1000)
 
 
 def load_training_data(dataset_dir):
@@ -243,11 +245,12 @@ def train_all_models(dataset_dir, ui_helpers, test_size=0.2, epochs=500):
             else:  # 3D
                 model = VolumeNNModel(n_modes=info['n_modes'], field_name=output_key)
 
-            # Train
+            # Train - use test set for validation (already split externally)
+            # Pass validation data explicitly instead of splitting again
             model.fit(
                 X_params[train_idx],
                 output_data[train_idx],
-                validation_split=0.2,
+                validation_split=0.0,  # Don't split again - we already have train/test split
                 epochs=epochs,
                 verbose=0
             )
@@ -274,6 +277,7 @@ def train_all_models(dataset_dir, ui_helpers, test_size=0.2, epochs=500):
                 'output_type': output_type,
                 'field_name': field_name,
                 'location': info['location'],
+                'npz_key': info['npz_key'],  # CRITICAL: Store NPZ key for Fluent comparison
                 'n_points': info['n_points'],
                 'train_metrics': {k: float(v) if not isinstance(v, list) else v
                                   for k, v in train_metrics.items()},

@@ -101,13 +101,18 @@ def generate_doe_combinations(setup_data):
     doe_config = setup_data.get('doe_configuration', {})
 
     # Build parameter arrays and mapping
+    # CRITICAL: Iterate in SAME order as trainer (doe_config.items())
     param_arrays = []
     param_mapping = []  # List of (bc_name, bc_type, param_name, param_path)
 
+    # Build bc_type mapping from model_inputs
+    bc_type_map = {}
     for input_item in setup_data['model_inputs']:
-        bc_name = input_item['name']
-        bc_type = input_item['type']  # Use 'type' (e.g., "Velocity Inlet"), not 'category'
-        doe_params = doe_config.get(bc_name, {})
+        bc_type_map[input_item['name']] = input_item['type']
+
+    # Iterate through doe_config (SAME as training order)
+    for bc_name, doe_params in doe_config.items():
+        bc_type = bc_type_map.get(bc_name, 'Unknown')
 
         for param_name, param_values in doe_params.items():
             if param_values:
@@ -488,7 +493,10 @@ def extract_field_data(solver, setup_data, dataset_dir):
                         # Store the data
                         key = f"{output_name}|{param_name}"
                         output_data[key] = surface_data
-                        print(f"    ✓ {param_name}: {len(surface_data)} points")
+
+                        # Show statistics to verify data
+                        stats = f"{len(surface_data)} points, range: [{surface_data.min():.6f}, {surface_data.max():.6f}]"
+                        print(f"    ✓ {param_name}: {stats}")
 
                     except Exception as e:
                         print(f"    ✗ Error extracting {param_name}: {e}")

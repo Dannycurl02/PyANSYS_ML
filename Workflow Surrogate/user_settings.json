@@ -7,7 +7,7 @@
     "precision": "single",
     "processor_count": 10,
     "dimension": 3,
-    "use_gui": true
+    "use_gui": false
   },
   "recent_setups": [
     "c:\\Users\\danny\\OneDrive - University of Arkansas\\Research\\Learning\\PyANSYS_ML\\Workflow Surrogate\\new_project\\model_setup.json",
@@ -15,9 +15,11 @@
   ],
   "recent_project_folders": [
     "C:\\Users\\danny\\OneDrive - University of Arkansas\\Research\\Learning\\PyANSYS_ML\\Workflow Surrogate\\proj1",
+    "C:\\Users\\dvcurl\\Desktop\\motor",
     "C:\\Users\\danny\\OneDrive - University of Arkansas\\Research\\Learning\\PyANSYS_ML\\Workflow Surrogate\\newproject1"
   ],
   "recent_case_files": [
-    "C:\\Users\\danny\\OneDrive - University of Arkansas\\Research\\Learning\\PyANSYS_ML\\Workflow Surrogate\\elbow.cas.h5"
+    "C:\\Users\\danny\\OneDrive - University of Arkansas\\Research\\Learning\\PyANSYS_ML\\Workflow Surrogate\\elbow.cas.h5",
+    "C:\\Users\\dvcurl\\Desktop\\Surrogate_motor.cas.h5"
   ]
 }

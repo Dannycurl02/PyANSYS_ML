@@ -1,0 +1,14 @@
+{
+  "avg-outlet-temp": [
+    "temperature"
+  ],
+  "mid-plane": [
+    "temperature",
+    "x-velocity",
+    "y-velocity"
+  ],
+  "fluid": [
+    "pressure",
+    "temperature"
+  ]
+}

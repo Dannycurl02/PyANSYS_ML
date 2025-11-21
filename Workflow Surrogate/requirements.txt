@@ -1,0 +1,6 @@
+numpy
+scikit-learn
+tensorflow
+matplotlib
+ansys-fluent-core
+

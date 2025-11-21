@@ -1,0 +1,79 @@
+{
+  "timestamp": "2025-11-12 11:07:51",
+  "model_inputs": [
+    {
+      "name": "hot-inlet",
+      "type": "Velocity Inlet",
+      "category": "Boundary Condition",
+      "doe_parameters": {
+        "momentum.velocity_magnitude": [
+          0.1,
+          0.3333333333333333,
+          0.5666666666666667,
+          0.7999999999999999,
+          1.0333333333333332,
+          1.2666666666666666,
+          1.5
+        ]
+      }
+    },
+    {
+      "name": "cold-inlet",
+      "type": "Velocity Inlet",
+      "category": "Boundary Condition",
+      "doe_parameters": {
+        "momentum.velocity_magnitude": [
+          0.05,
+          0.06666666666666667,
+          0.08333333333333334,
+          0.1,
+          0.11666666666666667,
+          0.13333333333333333,
+          0.15
+        ]
+      }
+    }
+  ],
+  "model_outputs": [
+    {
+      "name": "mid-plane",
+      "type": "Created Surface",
+      "category": "Surface"
+    },
+    {
+      "name": "fluid",
+      "type": "Fluid",
+      "category": "Cell Zone"
+    },
+    {
+      "name": "avg-outlet-temp",
+      "type": "Surface",
+      "category": "Report Definition"
+    }
+  ],
+  "doe_configuration": {
+    "hot-inlet": {
+      "momentum.velocity_magnitude": [
+        0.1,
+        0.3333333333333333,
+        0.5666666666666667,
+        0.7999999999999999,
+        1.0333333333333332,
+        1.2666666666666666,
+        1.5
+      ]
+    },
+    "cold-inlet": {
+      "momentum.velocity_magnitude": [
+        0.05,
+        0.06666666666666667,
+        0.08333333333333334,
+        0.1,
+        0.11666666666666667,
+        0.13333333333333333,
+        0.15
+      ]
+    }
+  },
+  "case_file": "C:\\Users\\danny\\OneDrive - University of Arkansas\\Research\\Learning\\PyANSYS_ML\\Workflow Surrogate\\elbow.cas.h5"
+}

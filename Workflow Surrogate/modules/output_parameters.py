@@ -68,6 +68,13 @@ def setup_output_parameters(selected_outputs, output_params, ui_helpers):
         ui_helpers.pause()
         return output_params
 
+    # Auto-initialize Report Definitions with placeholder parameter
+    # This ensures they get saved even if user doesn't click on them
+    for output in selected_outputs:
+        if output.get('category') == 'Report Definition':
+            if output['name'] not in output_params:
+                output_params[output['name']] = ['temperature']
+
     while True:
         ui_helpers.clear_screen()
         ui_helpers.print_header("CONFIGURE OUTPUT PARAMETERS")
