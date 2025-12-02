@@ -485,11 +485,12 @@ def input_output_setup_menu(solver, selected_inputs, selected_outputs, output_pa
         print("  [2] Configure Model Outputs (Surfaces & Zones)")
         print("  [3] Configure Output Parameters (Temp, Pressure, etc.)")
         print("  [4] Design of Experiment Setup")
-        print("  [5] Save Setup & Finish")
+        print("  [5] Add Latin Hypercube Sample Points")
+        print("  [6] Save Setup & Finish")
         print("  [0] Back (Discard Changes)")
         print("="*70)
 
-        choice = ui_helpers.get_choice(5)
+        choice = ui_helpers.get_choice(6)
 
         if choice == 0:
             return None
@@ -530,6 +531,29 @@ def input_output_setup_menu(solver, selected_inputs, selected_outputs, output_pa
                     input_item['doe_parameters'] = doe_parameters.get(input_item['name'], {})
 
         elif choice == 5:
+            # Add Latin Hypercube Sample Points
+            if not selected_inputs:
+                print("\n✗ Please configure inputs first (Option 1)")
+                ui_helpers.pause()
+            else:
+                from modules.doe_setup import add_lhs_points_simple
+
+                # Get existing DOE parameters
+                doe_parameters = {}
+                for input_item in selected_inputs:
+                    if 'doe_parameters' in input_item and input_item['doe_parameters']:
+                        doe_parameters[input_item['name']] = input_item['doe_parameters']
+
+                # Add LHS points
+                doe_parameters = add_lhs_points_simple(doe_parameters, ui_helpers)
+
+                # Save back to selected_inputs
+                for input_item in selected_inputs:
+                    if 'doe_parameters' not in input_item:
+                        input_item['doe_parameters'] = {}
+                    input_item['doe_parameters'] = doe_parameters.get(input_item['name'], {})
+
+        elif choice == 6:
             if not solver or not selected_inputs or not selected_outputs:
                 print("\n✗ Please complete all configuration steps first")
                 ui_helpers.pause()

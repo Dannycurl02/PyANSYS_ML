@@ -29,25 +29,68 @@ def visualization_menu(dataset_dir, ui_helpers):
     ui_helpers : module
         UI helpers module
     """
+    # First, select which model to visualize
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("SELECT MODEL TO VISUALIZE")
+
+    print(f"\nCase: {dataset_dir.name}\n")
+
+    # Find all model folders (directories that contain model files)
+    model_folders = []
+    for item in dataset_dir.iterdir():
+        if item.is_dir() and list(item.glob("*_metadata.json")):
+            model_folders.append(item.name)
+
+    if not model_folders:
+        print("[X] No trained models found. Train models first.")
+        ui_helpers.pause()
+        return
+
+    print("Available models:")
+    print("="*70)
+    for i, folder_name in enumerate(sorted(model_folders), 1):
+        summary_file = dataset_dir / folder_name / "training_summary.json"
+        if summary_file.exists():
+            with open(summary_file, 'r') as f:
+                summary = json.load(f)
+            timestamp = summary.get('training_info', {}).get('timestamp', 'Unknown')
+            num_models = len(summary.get('models', []))
+            print(f"  [{i}] {folder_name:20s} ({num_models} models, trained {timestamp})")
+        else:
+            print(f"  [{i}] {folder_name:20s}")
+    print("="*70)
+
+    choice = input("\nSelect model number (or 'B' to go back): ").strip().upper()
+
+    if choice == 'B':
+        return
+
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(model_folders):
+            selected_model = sorted(model_folders)[idx]
+            models_dir = dataset_dir / selected_model
+        else:
+            print("\n[X] Invalid selection")
+            ui_helpers.pause()
+            return
+    except ValueError:
+        print("\n[X] Invalid input")
+        ui_helpers.pause()
+        return
+
+    # Load training summary
+    summary_file = models_dir / "training_summary.json"
+    if not summary_file.exists():
+        print("\n[X] Training summary not found.")
+        ui_helpers.pause()
+        return
+
     while True:
         ui_helpers.clear_screen()
-        ui_helpers.print_header("DATA VISUALIZATION")
+        ui_helpers.print_header(f"DATA VISUALIZATION: {selected_model}")
 
         print(f"\nCase: {dataset_dir.name}")
-
-        # Check for models
-        models_dir = dataset_dir / "models"
-        if not models_dir.exists() or not list(models_dir.glob("*_metadata.json")):
-            print("\n[X] No trained models found. Train models first.")
-            ui_helpers.pause()
-            return
-
-        # Load training summary
-        summary_file = models_dir / "training_summary.json"
-        if not summary_file.exists():
-            print("\n[X] Training summary not found.")
-            ui_helpers.pause()
-            return
 
         with open(summary_file, 'r') as f:
             summary = json.load(f)
@@ -171,10 +214,12 @@ def run_prediction_workflow(dataset_dir, summary, ui_helpers, run_fluent=False):
 
     doe_config = setup_data.get('doe_configuration', {})
 
-    # Build parameter list
+    # Build parameter list - MUST match training order (sorted keys)
     param_info = []
-    for bc_name, params in doe_config.items():
-        for param_name, values in params.items():
+    for bc_name in sorted(doe_config.keys()):
+        params = doe_config[bc_name]
+        for param_name in sorted(params.keys()):
+            values = params[param_name]
             param_info.append({
                 'bc_name': bc_name,
                 'param_name': param_name,
@@ -478,7 +523,9 @@ def visualization_selection_menu(viz_data, ui_helpers):
         if field_2d_results:
             print(f"\n  2D Field Plots:")
             for output_key, data in field_2d_results.items():
-                print(f"  [{option_num}] {data['model_name']}")
+                # Format name nicely: "yz-mid_temperature" -> "yz-mid Temperature"
+                display_name = data['model_name'].replace('_', ' ').title()
+                print(f"  [{option_num}] {display_name}")
                 menu_options.append(('2d_plot', output_key))
                 option_num += 1
 
@@ -486,7 +533,9 @@ def visualization_selection_menu(viz_data, ui_helpers):
         if field_3d_results:
             print(f"\n  3D Field Plots:")
             for output_key, data in field_3d_results.items():
-                print(f"  [{option_num}] {data['model_name']}")
+                # Format name nicely: "volume_temperature" -> "Volume Temperature"
+                display_name = data['model_name'].replace('_', ' ').title()
+                print(f"  [{option_num}] {display_name}")
                 menu_options.append(('3d_plot', output_key))
                 option_num += 1
 
@@ -548,7 +597,7 @@ def display_2d_plot(output_key, pred_data, fluent_data, viz_data, ui_helpers):
     """Display 2D field plot with optional Fluent comparison."""
     dataset_dir = viz_data['dataset_dir']
 
-    # Load coordinates
+    # Load coordinates from a file with matching shape
     dataset_output_dir = dataset_dir / "dataset"
     output_files = sorted(dataset_output_dir.glob("sim_*.npz"))
 
@@ -557,18 +606,48 @@ def display_2d_plot(output_key, pred_data, fluent_data, viz_data, ui_helpers):
         ui_helpers.pause()
         return
 
-    sample_data = np.load(output_files[0], allow_pickle=True)
     location = pred_data['model_meta']['location']
     field_name = pred_data['model_meta']['field_name']
     coord_key = f"{location}|coordinates"
+    npz_key = pred_data['model_meta']['npz_key']
+    nn_pred = pred_data['prediction']
+    expected_size = len(nn_pred)
 
-    if coord_key not in sample_data.files:
-        print(f"\n[X] Coordinates not found: {coord_key}")
+    # Find a file with matching field size for coordinates
+    # IMPORTANT: Use a file from the middle of the dataset to ensure it was included in training.
+    # First and last files may have been excluded due to data quality issues.
+    coordinates = None
+
+    # Collect all valid files with matching size
+    valid_coord_files = []
+    for sample_file_path in output_files:
+        sample_data = np.load(sample_file_path, allow_pickle=True)
+        if coord_key in sample_data.files and npz_key in sample_data.files:
+            if len(sample_data[npz_key]) == expected_size:
+                valid_coord_files.append((sample_file_path, sample_data))
+
+    if not valid_coord_files:
+        print(f"\n[X] Could not find coordinates with matching size ({expected_size} points)")
         ui_helpers.pause()
         return
 
+    # Use a file from the middle of the valid files (most likely to be in training set)
+    middle_idx = len(valid_coord_files) // 2
+    sample_file_path, sample_data = valid_coord_files[middle_idx]
     coordinates = sample_data[coord_key]
-    nn_pred = pred_data['prediction']
+    print(f"  Loading coordinates from {sample_file_path.name} ({len(coordinates)} points)")
+
+    # Detect which 2 dimensions vary (for 2D surface plots)
+    # Calculate variance for each dimension to find the varying axes
+    variances = [np.var(coordinates[:, i]) for i in range(3)]
+    # Get indices of 2 dimensions with highest variance
+    varying_dims = sorted(range(3), key=lambda i: variances[i], reverse=True)[:2]
+    varying_dims.sort()  # Sort to maintain X, Y, Z order preference
+
+    # Get axis labels
+    axis_names = ['X', 'Y', 'Z']
+    xlabel = f'{axis_names[varying_dims[0]]} (m)'
+    ylabel = f'{axis_names[varying_dims[1]]} (m)'
 
     # Check if we have Fluent data
     # Use npz_key (pipe format) for Fluent lookup instead of output_key (underscore format)
@@ -579,16 +658,49 @@ def display_2d_plot(output_key, pred_data, fluent_data, viz_data, ui_helpers):
         fluent_values = fluent_data[fluent_key]
         fluent_coords = fluent_data[f"{location}|coordinates"]
 
+        # Always interpolate to ensure coordinate alignment
+        # Even if sizes match, coordinate ordering may differ between Fluent and dataset
+        print(f"\n  Aligning Fluent data with dataset coordinates...")
+        print(f"  Fluent: {len(fluent_values)} points, NN: {len(nn_pred)} points")
+
+        try:
+            from scipy.interpolate import griddata
+            # Interpolate Fluent values onto NN coordinates
+            fluent_values_interp = griddata(
+                fluent_coords, fluent_values, coordinates,
+                method='nearest'
+            )
+            fluent_values = fluent_values_interp
+            fluent_coords = coordinates
+            print(f"  Alignment successful!")
+        except Exception as e:
+            print(f"  Alignment failed: {e}")
+            print(f"  Showing NN prediction only (no Fluent comparison)")
+            has_fluent = False
+
+    # Downsample by half for performance
+    n_points = len(coordinates)
+    target_points = n_points // 2
+    if n_points > target_points:
+        indices = np.random.choice(n_points, target_points, replace=False)
+        coordinates = coordinates[indices]
+        nn_pred = nn_pred[indices]
+        if has_fluent:
+            fluent_values = fluent_values[indices]
+            fluent_coords = fluent_coords[indices]
+        print(f"  Downsampled from {n_points} to {target_points} points for visualization")
+
+    if has_fluent:
         # Create 3-panel plot: NN, Fluent, Error
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
         # NN Prediction
         scatter1 = axes[0].scatter(
-            coordinates[:, 0], coordinates[:, 1],
+            coordinates[:, varying_dims[0]], coordinates[:, varying_dims[1]],
             c=nn_pred, cmap='viridis', s=15, alpha=0.8
         )
-        axes[0].set_xlabel('X (m)')
-        axes[0].set_ylabel('Y (m)')
+        axes[0].set_xlabel(xlabel)
+        axes[0].set_ylabel(ylabel)
         axes[0].set_title(f'Neural Network\n{field_name}')
         axes[0].set_aspect('equal')
         plt.colorbar(scatter1, ax=axes[0], label='Value')
@@ -596,11 +708,11 @@ def display_2d_plot(output_key, pred_data, fluent_data, viz_data, ui_helpers):
 
         # Fluent Result
         scatter2 = axes[1].scatter(
-            fluent_coords[:, 0], fluent_coords[:, 1],
+            fluent_coords[:, varying_dims[0]], fluent_coords[:, varying_dims[1]],
             c=fluent_values, cmap='viridis', s=15, alpha=0.8
         )
-        axes[1].set_xlabel('X (m)')
-        axes[1].set_ylabel('Y (m)')
+        axes[1].set_xlabel(xlabel)
+        axes[1].set_ylabel(ylabel)
         axes[1].set_title(f'Fluent CFD\n{field_name}')
         axes[1].set_aspect('equal')
         plt.colorbar(scatter2, ax=axes[1], label='Value')
@@ -615,11 +727,11 @@ def display_2d_plot(output_key, pred_data, fluent_data, viz_data, ui_helpers):
         # Error plot
         error = np.abs(nn_pred - fluent_values)
         scatter3 = axes[2].scatter(
-            coordinates[:, 0], coordinates[:, 1],
+            coordinates[:, varying_dims[0]], coordinates[:, varying_dims[1]],
             c=error, cmap='Reds', s=15, alpha=0.8
         )
-        axes[2].set_xlabel('X (m)')
-        axes[2].set_ylabel('Y (m)')
+        axes[2].set_xlabel(xlabel)
+        axes[2].set_ylabel(ylabel)
         axes[2].set_title(f'Absolute Error\nMAE: {error.mean():.4e}')
         axes[2].set_aspect('equal')
         plt.colorbar(scatter3, ax=axes[2], label='Error')
@@ -633,18 +745,18 @@ def display_2d_plot(output_key, pred_data, fluent_data, viz_data, ui_helpers):
         ax = fig.add_subplot(111)
 
         scatter = ax.scatter(
-            coordinates[:, 0], coordinates[:, 1],
+            coordinates[:, varying_dims[0]], coordinates[:, varying_dims[1]],
             c=nn_pred, cmap='viridis', s=15, alpha=0.8
         )
-        ax.set_xlabel('X (m)')
-        ax.set_ylabel('Y (m)')
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
         ax.set_title(f'{pred_data["model_name"]}\n{field_name}')
         ax.set_aspect('equal')
         plt.colorbar(scatter, ax=ax, label='Value')
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.show()
+    plt.show(block=False)  # Don't block so menu stays open
 
     ui_helpers.pause()
 
@@ -653,7 +765,7 @@ def display_3d_plot(output_key, pred_data, fluent_data, viz_data, ui_helpers):
     """Display 3D field plot with optional Fluent comparison."""
     dataset_dir = viz_data['dataset_dir']
 
-    # Load coordinates
+    # Load coordinates from a file with matching shape
     dataset_output_dir = dataset_dir / "dataset"
     output_files = sorted(dataset_output_dir.glob("sim_*.npz"))
 
@@ -662,27 +774,45 @@ def display_3d_plot(output_key, pred_data, fluent_data, viz_data, ui_helpers):
         ui_helpers.pause()
         return
 
-    sample_data = np.load(output_files[0], allow_pickle=True)
     location = pred_data['model_meta']['location']
     field_name = pred_data['model_meta']['field_name']
     coord_key = f"{location}|coordinates"
+    npz_key = pred_data['model_meta']['npz_key']
+    nn_pred = pred_data['prediction']
+    expected_size = len(nn_pred)
 
-    if coord_key not in sample_data.files:
-        print(f"\n[X] Coordinates not found: {coord_key}")
+    # Find a file with matching field size for coordinates
+    # IMPORTANT: Use a file from the middle of the dataset to ensure it was included in training.
+    # First and last files may have been excluded due to data quality issues.
+    coordinates = None
+
+    # Collect all valid files with matching size
+    valid_coord_files = []
+    for sample_file_path in output_files:
+        sample_data = np.load(sample_file_path, allow_pickle=True)
+        if coord_key in sample_data.files and npz_key in sample_data.files:
+            if len(sample_data[npz_key]) == expected_size:
+                valid_coord_files.append((sample_file_path, sample_data))
+
+    if not valid_coord_files:
+        print(f"\n[X] Could not find coordinates with matching size ({expected_size} points)")
         ui_helpers.pause()
         return
 
+    # Use a file from the middle of the valid files (most likely to be in training set)
+    middle_idx = len(valid_coord_files) // 2
+    sample_file_path, sample_data = valid_coord_files[middle_idx]
     coordinates = sample_data[coord_key]
-    nn_pred = pred_data['prediction']
+    print(f"  Loading coordinates from {sample_file_path.name} ({len(coordinates)} points)")
 
-    # Downsample for performance if dataset is large
+    # Downsample by half for performance
     n_points = len(coordinates)
-    max_points = 2000  # Maximum points to display (reduced for better performance)
-    if n_points > max_points:
-        indices = np.random.choice(n_points, max_points, replace=False)
+    target_points = n_points // 2
+    if n_points > target_points:
+        indices = np.random.choice(n_points, target_points, replace=False)
         coordinates = coordinates[indices]
         nn_pred = nn_pred[indices]
-        print(f"\n  Note: Downsampled from {n_points} to {max_points} points for visualization")
+        print(f"\n  Note: Downsampled from {n_points} to {target_points} points for visualization")
     else:
         indices = None
 
@@ -695,11 +825,36 @@ def display_3d_plot(output_key, pred_data, fluent_data, viz_data, ui_helpers):
         fluent_values = fluent_data[fluent_key]
         fluent_coords = fluent_data[f"{location}|coordinates"]
 
-        # Apply same downsampling to Fluent data
-        if indices is not None:
-            fluent_values = fluent_values[indices]
-            fluent_coords = fluent_coords[indices]
+        # Always interpolate to ensure coordinate alignment
+        # Even if sizes match, coordinate ordering may differ between Fluent and dataset
+        print(f"\n  Aligning Fluent data with dataset coordinates...")
+        print(f"  Fluent: {len(fluent_values)} points, NN: {expected_size} points")
 
+        try:
+            from scipy.interpolate import griddata
+            # Get full coordinates before downsampling for interpolation
+            full_coords = sample_data[coord_key]
+
+            # Interpolate Fluent values onto full NN coordinates
+            fluent_values_interp = griddata(
+                fluent_coords, fluent_values, full_coords,
+                method='nearest'
+            )
+            fluent_values = fluent_values_interp
+            fluent_coords = full_coords
+
+            # Now apply downsampling if needed
+            if indices is not None:
+                fluent_values = fluent_values[indices]
+                fluent_coords = fluent_coords[indices]
+
+            print(f"  Alignment successful!")
+        except Exception as e:
+            print(f"  Alignment failed: {e}")
+            print(f"  Showing NN prediction only (no Fluent comparison)")
+            has_fluent = False
+
+    if has_fluent:
         # Calculate data ranges for aspect ratio
         x_range = coordinates[:, 0].max() - coordinates[:, 0].min()
         y_range = coordinates[:, 1].max() - coordinates[:, 1].min()
@@ -786,7 +941,7 @@ def display_3d_plot(output_key, pred_data, fluent_data, viz_data, ui_helpers):
         ax.set_box_aspect(aspect)
 
     plt.tight_layout()
-    plt.show()
+    plt.show(block=False)  # Don't block so menu stays open
 
     ui_helpers.pause()
 

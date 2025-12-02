@@ -193,19 +193,41 @@ Projects/
             │   ├── sim_0001.npz
             │   ├── sim_0002.npz
             │   └── ...
-            └── models/                  # Trained surrogate models
-                ├── 1D_avg-outlet-temp_1.h5
-                ├── 2D_temperature_1.h5
-                ├── 2D_temperature_1_pod_components.npz
-                ├── 2D_temperature_1_metadata.json
-                └── training_summary.json
+            ├── model1/                  # Named model folder (NEW in Dec 2025)
+            │   ├── 1D_avg-outlet-temp_1.h5
+            │   ├── 2D_temperature_1.h5
+            │   ├── 2D_temperature_1.npz
+            │   ├── 2D_temperature_1_metadata.json
+            │   └── training_summary.json
+            └── baseline/                # Another model configuration
+                └── (trained model files)
 ```
 
 ---
 
 ## Key Features
 
-### Recent Improvements (2025-11-12)
+### Recent Improvements
+
+#### December 2025 - Multi-Model Management System
+
+1. **Named Model Folders**
+   - Train multiple model configurations without overwriting
+   - Each model set stored in its own named folder
+   - Easy comparison between different model versions
+
+2. **Model Selection Interface**
+   - Training: Prompts for model name at start
+   - Visualization: Select which model to visualize from menu
+   - Digital Twin: GUI dialog for model selection at startup
+   - Shows metadata (number of models, training date)
+
+3. **Version Control**
+   - Keep all model versions organized
+   - Test different configurations side-by-side
+   - Compare accuracy between parameter orderings
+
+#### November 2025 - Fluent Validation & Visualization
 
 1. **Fluent Validation Integration**
    - Added real-time Fluent comparison during predictions
@@ -528,6 +550,8 @@ Ensure compliance with Ansys Fluent and PyFluent licensing requirements.
 
 ---
 
-**Last Updated:** 2025-11-12
-**Version:** 2.0
+**Last Updated:** 2025-12-02
+**Version:** 2.1
 **Verified Against:** PyFluent v0.35.0
+
+**See Also:** [CURRENT_STATUS.md](CURRENT_STATUS.md) for latest development status and known issues

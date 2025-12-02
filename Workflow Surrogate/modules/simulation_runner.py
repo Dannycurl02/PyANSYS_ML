@@ -88,6 +88,10 @@ def generate_doe_combinations(setup_data):
     """
     Generate all DOE combinations from setup data.
 
+    This function handles both legacy full-factorial DOE and new LHS/range-based DOE.
+    For LHS, the samples are already pre-generated and stored as parallel arrays.
+    For legacy, we use itertools.product to generate all combinations.
+
     Parameters
     ----------
     setup_data : dict
@@ -128,8 +132,17 @@ def generate_doe_combinations(setup_data):
     if not param_arrays:
         return []
 
-    # Generate all combinations
-    combinations = list(itertools.product(*param_arrays))
+    # Check if all arrays have the same length (indicates LHS or pre-generated samples)
+    # If they do, zip them together. Otherwise, use product for full factorial.
+    array_lengths = [len(arr) for arr in param_arrays]
+
+    if len(set(array_lengths)) == 1:
+        # All arrays same length - treat as parallel samples (LHS or manually added)
+        # Zip the arrays together instead of using product
+        combinations = list(zip(*param_arrays))
+    else:
+        # Different lengths - use full factorial (legacy behavior)
+        combinations = list(itertools.product(*param_arrays))
 
     # Create list of (sim_id, bc_values_dict)
     doe_list = []
@@ -576,14 +589,13 @@ def run_single_simulation(solver, setup_data, dataset_dir, ui_helpers):
         sys.stdout = StringIO()
         sys.stderr = StringIO()
 
-        # Use standard initialization (same as Field/Volume/Scalar Surrogate)
-        solver.settings.solution.initialization.initialization_type = "standard"
-        solver.settings.solution.initialization.standard_initialize()
+        # Use hybrid initialization
+        solver.settings.solution.initialization.hybrid_initialize()
 
         # Restore output
         sys.stdout = old_stdout
         sys.stderr = old_stderr
-        print("  ✓ Initialized (standard)")
+        print("  ✓ Initialized (hybrid)")
     except Exception as e:
         # Restore output on error
         sys.stdout = old_stdout
@@ -679,6 +691,7 @@ def run_batch_simulations(solver, setup_data, analysis, dataset_dir, ui_helpers)
     successful = 0
     failed = 0
 
+    is_first_sim = True
     for sim_id, bc_values in doe_list:
         # Check if simulation already exists
         output_file = outputs_dir / f"sim_{sim_id:04d}.npz"
@@ -698,25 +711,29 @@ def run_batch_simulations(solver, setup_data, analysis, dataset_dir, ui_helpers)
             failed += 1
             continue
 
-        # Initialize
-        try:
-            # Suppress Fluent output
-            old_stdout = sys.stdout
-            old_stderr = sys.stderr
-            sys.stdout = StringIO()
-            sys.stderr = StringIO()
+        # Initialize only for the first simulation in batch
+        if is_first_sim:
+            try:
+                # Suppress Fluent output
+                old_stdout = sys.stdout
+                old_stderr = sys.stderr
+                sys.stdout = StringIO()
+                sys.stderr = StringIO()
 
-            solver.settings.solution.initialization.initialization_type = "standard"
-            solver.settings.solution.initialization.standard_initialize()
+                solver.settings.solution.initialization.hybrid_initialize()
 
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-        except Exception as e:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-            print(f"✗ Initialization failed: {e}")
-            failed += 1
-            continue
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+                print("Initialized (hybrid)")
+                is_first_sim = False
+            except Exception as e:
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+                print(f"✗ Initialization failed: {e}")
+                failed += 1
+                continue
+        else:
+            print("Continuing from previous solution (no reinitialization)")
 
         # Solve
         try:
@@ -826,6 +843,7 @@ def run_remaining_simulations(solver, setup_data, analysis, dataset_dir, existin
     successful = 0
     failed = 0
 
+    is_first_sim = True
     for idx, (sim_id, bc_values) in enumerate(remaining_doe, 1):
         print(f"\n{'='*70}")
         print(f"[{idx}/{total_sims}] Simulation {sim_id}")
@@ -838,25 +856,29 @@ def run_remaining_simulations(solver, setup_data, analysis, dataset_dir, existin
             failed += 1
             continue
 
-        # Initialize
-        try:
-            # Suppress Fluent output
-            old_stdout = sys.stdout
-            old_stderr = sys.stderr
-            sys.stdout = StringIO()
-            sys.stderr = StringIO()
+        # Initialize only for the first simulation in batch
+        if is_first_sim:
+            try:
+                # Suppress Fluent output
+                old_stdout = sys.stdout
+                old_stderr = sys.stderr
+                sys.stdout = StringIO()
+                sys.stderr = StringIO()
 
-            solver.settings.solution.initialization.initialization_type = "standard"
-            solver.settings.solution.initialization.standard_initialize()
+                solver.settings.solution.initialization.hybrid_initialize()
 
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-        except Exception as e:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-            print(f"✗ Initialization failed: {e}")
-            failed += 1
-            continue
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+                print("Initialized (hybrid)")
+                is_first_sim = False
+            except Exception as e:
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+                print(f"✗ Initialization failed: {e}")
+                failed += 1
+                continue
+        else:
+            print("Continuing from previous solution (no reinitialization)")
 
         # Solve
         try:

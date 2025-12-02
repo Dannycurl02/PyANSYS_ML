@@ -45,14 +45,15 @@ def detect_output_type(data_shape):
     if n_points <= 100:
         # Small number of points - scalar/point data
         return '1D', 0
-    elif n_points <= 10000:
-        # Medium size - likely 2D cut plane
+    elif n_points <= 100000:
+        # Medium size - likely 2D cut plane (surfaces, slices, etc.)
+        # Increased threshold to accommodate larger 2D surfaces
         # Use fewer modes - will be auto-adjusted based on n_samples
-        return '2D', min(8, n_points // 100)
+        return '2D', min(10, n_points // 100)
     else:
-        # Large size - likely 3D volume
+        # Very large size - likely 3D volume
         # Use fewer modes - will be auto-adjusted based on n_samples
-        return '3D', min(12, n_points // 1000)
+        return '3D', min(15, n_points // 1000)
 
 
 def load_training_data(dataset_dir):
@@ -98,65 +99,177 @@ def load_training_data(dataset_dir):
     param_names = []
     param_values = []
 
-    for bc_name, params in doe_config.items():
-        for param_name, values in params.items():
+    # Iterate in sorted order for consistency
+    for bc_name in sorted(doe_config.keys()):
+        params = doe_config[bc_name]
+        for param_name in sorted(params.keys()):
+            values = params[param_name]
             param_names.append(f"{bc_name}.{param_name}")
             param_values.append(values)
 
-    # Generate all combinations
-    import itertools
-    param_combinations = list(itertools.product(*param_values))
-    X_params = np.array(param_combinations[:len(output_files)])
+    # Check if all arrays have the same length (LHS) or different (full factorial)
+    array_lengths = [len(arr) for arr in param_values]
 
-    print(f"  Input parameters: {X_params.shape}")
+    if len(set(array_lengths)) == 1:
+        # All same length - LHS or parallel samples (zip together)
+        param_combinations = list(zip(*param_values))
+    else:
+        # Different lengths - full factorial (all combinations)
+        import itertools
+        param_combinations = list(itertools.product(*param_values))
 
     # Load outputs
     output_data = {}
     output_info = {}
 
-    # First pass: determine structure
-    sample_file = np.load(output_files[0], allow_pickle=True)
+    # First pass: scan all files to detect shape variations
+    from collections import Counter, defaultdict
 
+    print(f"  Scanning simulation files for shape consistency...")
+
+    # Dictionary to track shapes for each field: {model_key: {shape: [file_indices]}}
+    field_shapes = defaultdict(lambda: defaultdict(list))
+
+    # Scan ALL files to build complete shape map
+    for i, output_file_path in enumerate(output_files):
+        data = np.load(output_file_path, allow_pickle=True)
+
+        for output_location, field_list in output_params.items():
+            for field_name in field_list:
+                # Skip coordinates
+                if field_name.lower() == 'coordinates':
+                    continue
+
+                npz_key = f"{output_location}|{field_name}"
+                model_key = f"{output_location}_{field_name}"
+
+                if npz_key in data.files:
+                    shape = len(data[npz_key])
+                    field_shapes[model_key][shape].append(i)
+
+    # Check for shape inconsistencies and let user choose
+    shape_decisions = {}
+
+    for model_key, shapes_dict in field_shapes.items():
+        if len(shapes_dict) > 1:
+            # Multiple shapes found - present menu
+            print(f"\n  ⚠ Shape inconsistency detected for '{model_key}':")
+            print(f"  {'='*60}")
+
+            options = []
+            for idx, (shape, file_indices) in enumerate(sorted(shapes_dict.items()), 1):
+                print(f"  [{idx}] Shape ({shape},) - {len(file_indices)} files")
+                print(f"      Files: sim_{file_indices[0]+1:04d} to sim_{file_indices[-1]+1:04d}")
+                options.append(shape)
+
+            print(f"  {'='*60}")
+
+            while True:
+                try:
+                    choice = input(f"  Select which shape to use [1-{len(options)}]: ")
+                    choice_idx = int(choice) - 1
+                    if 0 <= choice_idx < len(options):
+                        selected_shape = options[choice_idx]
+                        shape_decisions[model_key] = selected_shape
+                        print(f"  ✓ Using shape ({selected_shape},) for '{model_key}'")
+                        break
+                    else:
+                        print(f"  Invalid choice. Please enter 1-{len(options)}")
+                except ValueError:
+                    print(f"  Invalid input. Please enter 1-{len(options)}")
+                except KeyboardInterrupt:
+                    print("\n  Operation cancelled by user")
+                    raise
+        else:
+            # Only one shape - use it
+            shape_decisions[model_key] = list(shapes_dict.keys())[0]
+
+    # Build output_info with user-selected shapes
     for output_location, field_list in output_params.items():
         for field_name in field_list:
-            # Create unique key matching the NPZ file format: "location|field"
+            if field_name.lower() == 'coordinates':
+                continue
+
             npz_key = f"{output_location}|{field_name}"
             model_key = f"{output_location}_{field_name}"
 
-            # Check if this field exists in the data
-            if npz_key in sample_file.files:
-                # Load data directly from NPZ (already flattened)
+            if model_key in shape_decisions:
+                expected_n_points = shape_decisions[model_key]
+
+                # Load a sample for type detection
+                sample_file = np.load(output_files[0], allow_pickle=True)
                 sample_values = sample_file[npz_key]
 
-                # Detect output type
                 output_type, n_modes = detect_output_type(sample_values.shape)
 
                 output_info[model_key] = {
                     'location': output_location,
                     'field': field_name,
-                    'npz_key': npz_key,  # Store NPZ key for loading
+                    'npz_key': npz_key,
                     'type': output_type,
                     'n_modes': n_modes,
-                    'n_points': len(sample_values)
+                    'n_points': expected_n_points
                 }
-
-                # Removed redundant print - output info shown in training summary
-                pass
             else:
                 print(f"  ⚠ Warning: Key '{npz_key}' not found in simulation data")
 
-    # Second pass: load all data
+    # Validate all files for shape consistency across ALL fields
+    print(f"  Validating {len(output_files)} simulation files...")
+    valid_file_indices = []
+    invalid_files = []
+
+    for i, output_file in enumerate(output_files):
+        data = np.load(output_file, allow_pickle=True)
+        is_valid = True
+
+        for model_key, info in output_info.items():
+            npz_key = info['npz_key']
+            expected_shape = info['n_points']
+
+            if npz_key in data.files:
+                actual_shape = len(data[npz_key])
+                if actual_shape != expected_shape:
+                    is_valid = False
+                    invalid_files.append((i, output_file.name, model_key, expected_shape, actual_shape))
+                    break
+            else:
+                is_valid = False
+                invalid_files.append((i, output_file.name, model_key, 'missing', 'N/A'))
+                break
+
+        if is_valid:
+            valid_file_indices.append(i)
+
+    # Report validation results
+    if invalid_files:
+        print(f"  ⚠ Warning: {len(invalid_files)} files have inconsistent shapes and will be excluded:")
+        for idx, fname, model_key, expected, actual in invalid_files[:5]:
+            print(f"    - {fname} ({model_key}): expected {expected}, got {actual}")
+        if len(invalid_files) > 5:
+            print(f"    ... and {len(invalid_files) - 5} more")
+
+    print(f"  Using {len(valid_file_indices)} valid files out of {len(output_files)}")
+
+    # Filter parameters to match valid files
+    X_params = np.array(param_combinations[:len(output_files)])
+    X_params = X_params[valid_file_indices]
+
+    print(f"  Input parameters: {X_params.shape}")
+
+    # Second pass: load all data from valid files only
     for model_key, info in output_info.items():
         output_arrays = []
         npz_key = info['npz_key']
 
-        for output_file in output_files:
+        for i in valid_file_indices:
+            output_file = output_files[i]
             data = np.load(output_file, allow_pickle=True)
 
             # Load data directly using NPZ key
             values = data[npz_key]
             output_arrays.append(values)
 
+        # Convert to numpy array (all have same shape now)
         output_data[model_key] = np.array(output_arrays)
 
     return {
@@ -165,6 +278,101 @@ def load_training_data(dataset_dir):
         'output_info': output_info,
         'param_names': param_names
     }
+
+
+def select_model_architecture(ui_helpers):
+    """
+    Menu for selecting model architecture for each output type.
+
+    Parameters
+    ----------
+    ui_helpers : module
+        UI helpers module
+
+    Returns
+    -------
+    dict
+        Model architecture selection: {'1D': str, '2D': str, '3D': str}
+    """
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("MODEL ARCHITECTURE SELECTION")
+
+    print("\nSelect model architecture for each output type:")
+    print("This determines which neural network architecture to use for training.")
+
+    model_selection = {}
+
+    # 1D (Scalar) model selection
+    print(f"\n{'='*70}")
+    print("1D OUTPUTS (Scalars - single values)")
+    print(f"{'='*70}")
+    print("  [1] Feedforward Neural Network (Default)")
+    print("      - Simple dense layers")
+    print("      - Fast training, good for scalar predictions")
+    print(f"{'='*70}")
+
+    choice = input("Select 1D model architecture [1]: ").strip() or "1"
+    model_selection['1D'] = 'ScalarNN'  # Only one option for now
+    print(f"  Selected: Feedforward Neural Network")
+
+    # 2D (Field) model selection
+    print(f"\n{'='*70}")
+    print("2D OUTPUTS (Fields - surfaces, cut planes)")
+    print(f"{'='*70}")
+    print("  [1] POD + Neural Network (Default)")
+    print("      - Dimensionality reduction using POD/PCA")
+    print("      - Predicts POD modes, reconstructs full field")
+    print("      - Efficient for smooth fields")
+    print("  [2] Convolutional Neural Network (CNN)")
+    print("      - Direct image-to-image prediction")
+    print("      - Better for sharp gradients/discontinuities")
+    print("      - Requires structured grid (coming soon)")
+    print(f"{'='*70}")
+
+    choice = input("Select 2D model architecture [1]: ").strip() or "1"
+    if choice == "1":
+        model_selection['2D'] = 'FieldNN'
+        print(f"  Selected: POD + Neural Network")
+    elif choice == "2":
+        model_selection['2D'] = 'CNN2D'
+        print(f"  Selected: Convolutional Neural Network (2D)")
+        print(f"  Note: CNN implementation coming soon - falling back to POD+NN")
+        model_selection['2D'] = 'FieldNN'
+    else:
+        model_selection['2D'] = 'FieldNN'
+        print(f"  Invalid choice - using default: POD + Neural Network")
+
+    # 3D (Volume) model selection
+    print(f"\n{'='*70}")
+    print("3D OUTPUTS (Volumes - full 3D fields)")
+    print(f"{'='*70}")
+    print("  [1] POD + Neural Network (Default)")
+    print("      - Dimensionality reduction using POD/PCA")
+    print("      - Predicts POD modes, reconstructs full volume")
+    print("      - Efficient for large volumes")
+    print("  [2] 3D Convolutional Neural Network (3D-CNN)")
+    print("      - Direct volume-to-volume prediction")
+    print("      - Better for complex 3D structures")
+    print("      - Requires structured grid (coming soon)")
+    print(f"{'='*70}")
+
+    choice = input("Select 3D model architecture [1]: ").strip() or "1"
+    if choice == "1":
+        model_selection['3D'] = 'VolumeNN'
+        print(f"  Selected: POD + Neural Network")
+    elif choice == "2":
+        model_selection['3D'] = 'CNN3D'
+        print(f"  Selected: 3D Convolutional Neural Network")
+        print(f"  Note: 3D-CNN implementation coming soon - falling back to POD+NN")
+        model_selection['3D'] = 'VolumeNN'
+    else:
+        model_selection['3D'] = 'VolumeNN'
+        print(f"  Invalid choice - using default: POD + Neural Network")
+
+    print(f"\n{'='*70}")
+    ui_helpers.pause()
+
+    return model_selection
 
 
 def train_all_models(dataset_dir, ui_helpers, test_size=0.2, epochs=500):
@@ -182,8 +390,31 @@ def train_all_models(dataset_dir, ui_helpers, test_size=0.2, epochs=500):
     epochs : int
         Training epochs
     """
+    # Ask for model name
     ui_helpers.clear_screen()
     ui_helpers.print_header("TRAIN SURROGATE MODELS")
+
+    print("\nEnter a name for this model set (e.g., 'baseline', 'high_fidelity', 'test1')")
+    print("This will create a folder to store all trained models.")
+    model_name = input("\nModel name: ").strip()
+
+    if not model_name:
+        print("\n✗ Model name cannot be empty")
+        ui_helpers.pause()
+        return
+
+    # Validate model name (no special characters that would break file paths)
+    import re
+    if not re.match(r'^[a-zA-Z0-9_-]+$', model_name):
+        print("\n✗ Model name can only contain letters, numbers, underscores, and hyphens")
+        ui_helpers.pause()
+        return
+
+    # Select model architectures
+    model_selection = select_model_architecture(ui_helpers)
+
+    ui_helpers.clear_screen()
+    ui_helpers.print_header(f"TRAIN SURROGATE MODELS: {model_name}")
 
     try:
         # Load data
@@ -200,6 +431,10 @@ def train_all_models(dataset_dir, ui_helpers, test_size=0.2, epochs=500):
         print(f"  Outputs to train: {len(outputs)}")
         print(f"  Test split: {test_size*100:.0f}%")
         print(f"  Epochs: {epochs}")
+        print(f"\n  Model Architectures:")
+        print(f"    1D (Scalars): {model_selection['1D']}")
+        print(f"    2D (Fields):  {model_selection['2D']}")
+        print(f"    3D (Volumes): {model_selection['3D']}")
 
         # Split data
         train_idx, test_idx = train_test_split(
@@ -211,12 +446,15 @@ def train_all_models(dataset_dir, ui_helpers, test_size=0.2, epochs=500):
         print(f"  Train samples: {len(train_idx)}")
         print(f"  Test samples: {len(test_idx)}")
 
-        # Create models directory
-        models_dir = dataset_dir / "models"
+        # Create models directory with model name
+        models_dir = dataset_dir / model_name
         models_dir.mkdir(exist_ok=True)
 
-        # Track model counts for naming
-        model_counts = {'1D': {}, '2D': {}, '3D': {}}
+        print(f"\n  Model storage: {models_dir}")
+        print(f"{'='*70}\n")
+
+        # Track model counts for naming (in case of duplicates)
+        model_counts = {}
         trained_models = []
 
         # Train each output
@@ -224,26 +462,50 @@ def train_all_models(dataset_dir, ui_helpers, test_size=0.2, epochs=500):
             info = output_info[output_key]
             output_type = info['type']
             field_name = info['field']
+            location = info['location']
 
-            # Determine model name with index
-            if field_name not in model_counts[output_type]:
-                model_counts[output_type][field_name] = 0
-            model_counts[output_type][field_name] += 1
-            index = model_counts[output_type][field_name]
+            # Use descriptive name: location_field (e.g., "yz-mid_temperature")
+            # Only add index if there are duplicates
+            base_name = f"{location}_{field_name}"
 
-            model_name = f"{output_type}_{field_name}_{index}"
+            if base_name not in model_counts:
+                model_counts[base_name] = 0
+            model_counts[base_name] += 1
+
+            if model_counts[base_name] > 1:
+                model_name = f"{base_name}_{model_counts[base_name]}"
+            else:
+                model_name = base_name
 
             print(f"\n{'='*70}")
             print(f"Training model: {model_name}")
+            print(f"  Architecture: {model_selection[output_type]}")
             print(f"{'='*70}")
 
-            # Create appropriate model
+            # Create appropriate model based on selection
             if output_type == '1D':
-                model = ScalarNNModel(field_name=output_key)
+                if model_selection['1D'] == 'ScalarNN':
+                    model = ScalarNNModel(field_name=output_key)
+                else:
+                    raise ValueError(f"Unknown 1D model type: {model_selection['1D']}")
+
             elif output_type == '2D':
-                model = FieldNNModel(n_modes=info['n_modes'], field_name=output_key)
+                if model_selection['2D'] == 'FieldNN':
+                    model = FieldNNModel(n_modes=info['n_modes'], field_name=output_key)
+                elif model_selection['2D'] == 'CNN2D':
+                    # CNN implementation placeholder
+                    raise NotImplementedError("CNN2D not yet implemented - use FieldNN")
+                else:
+                    raise ValueError(f"Unknown 2D model type: {model_selection['2D']}")
+
             else:  # 3D
-                model = VolumeNNModel(n_modes=info['n_modes'], field_name=output_key)
+                if model_selection['3D'] == 'VolumeNN':
+                    model = VolumeNNModel(n_modes=info['n_modes'], field_name=output_key)
+                elif model_selection['3D'] == 'CNN3D':
+                    # 3D-CNN implementation placeholder
+                    raise NotImplementedError("CNN3D not yet implemented - use VolumeNN")
+                else:
+                    raise ValueError(f"Unknown 3D model type: {model_selection['3D']}")
 
             # Train - use test set for validation (already split externally)
             # Pass validation data explicitly instead of splitting again
@@ -273,6 +535,7 @@ def train_all_models(dataset_dir, ui_helpers, test_size=0.2, epochs=500):
             # Save metadata
             metadata = {
                 'model_name': model_name,
+                'model_architecture': model_selection[output_type],  # Store which architecture was used
                 'output_key': output_key,
                 'output_type': output_type,
                 'field_name': field_name,

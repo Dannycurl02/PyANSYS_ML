@@ -4,8 +4,8 @@
     "C:\\Users\\danny\\OneDrive - University of Arkansas\\Research\\Learning\\PyANSYS_ML\\Workflow Surrogate\\elbow.cas.h5"
   ],
   "solver_settings": {
-    "precision": "single",
-    "processor_count": 10,
+    "precision": "double",
+    "processor_count": 20,
     "dimension": 3,
     "use_gui": false
   },
@@ -14,11 +14,16 @@
     "C:\\Users\\danny\\OneDrive - University of Arkansas\\Research\\Learning\\PyANSYS_ML\\Workflow Surrogate\\user_settings.json"
   ],
   "recent_project_folders": [
+    "C:\\Users\\danny\\OneDrive - University of Arkansas\\.Machine Learning\\Project\\CP",
+    "C:\\Users\\dvcurl\\OneDrive - University of Arkansas\\.Machine Learning\\Project\\CP",
     "C:\\Users\\danny\\OneDrive - University of Arkansas\\Research\\Learning\\PyANSYS_ML\\Workflow Surrogate\\proj1",
     "C:\\Users\\dvcurl\\Desktop\\motor",
     "C:\\Users\\danny\\OneDrive - University of Arkansas\\Research\\Learning\\PyANSYS_ML\\Workflow Surrogate\\newproject1"
   ],
   "recent_case_files": [
+    "C:\\Users\\dvcurl\\OneDrive - University of Arkansas\\.Machine Learning\\Project\\ANSYS_Sim\\surrogate_CP.cas.h5",
+    "C:\\Users\\danny\\OneDrive - University of Arkansas\\.Machine Learning\\Project\\ANSYS_Sim\\surrogate_CP.cas.h5",
+    "C:\\Users\\danny\\OneDrive - University of Arkansas\\.Machine Learning\\Project\\ANSYS_Sim\\surrogate_CP.h5",
     "C:\\Users\\danny\\OneDrive - University of Arkansas\\Research\\Learning\\PyANSYS_ML\\Workflow Surrogate\\elbow.cas.h5",
     "C:\\Users\\dvcurl\\Desktop\\Surrogate_motor.cas.h5"
   ]
