@@ -54,13 +54,20 @@ class ScalarNNModel:
         output_dim : int
             Number of scalar outputs
         """
+        # Enhanced architecture: Deeper network with 5 hidden layers
+        # Wider early layers (128) for better feature extraction
+        # Reduced regularization (L2=0.0001) and dropout (0.05) for better fitting
         model = keras.Sequential([
             keras.layers.Input(shape=(input_dim,)),
-            keras.layers.Dense(64, activation='relu', kernel_regularizer=keras.regularizers.l2(0.001)),
-            keras.layers.Dropout(0.1),
-            keras.layers.Dense(32, activation='relu', kernel_regularizer=keras.regularizers.l2(0.001)),
-            keras.layers.Dropout(0.1),
-            keras.layers.Dense(16, activation='relu', kernel_regularizer=keras.regularizers.l2(0.001)),
+            keras.layers.Dense(128, activation='relu', kernel_regularizer=keras.regularizers.l2(0.0001)),
+            keras.layers.Dropout(0.05),
+            keras.layers.Dense(128, activation='relu', kernel_regularizer=keras.regularizers.l2(0.0001)),
+            keras.layers.Dropout(0.05),
+            keras.layers.Dense(64, activation='relu', kernel_regularizer=keras.regularizers.l2(0.0001)),
+            keras.layers.Dropout(0.05),
+            keras.layers.Dense(32, activation='relu', kernel_regularizer=keras.regularizers.l2(0.0001)),
+            keras.layers.Dropout(0.05),
+            keras.layers.Dense(16, activation='relu', kernel_regularizer=keras.regularizers.l2(0.0001)),
             keras.layers.Dense(output_dim)
         ])
 
@@ -109,13 +116,18 @@ class ScalarNNModel:
 
         print(f"\n[3/3] Training (epochs={epochs})...")
 
+        # Adaptive batch size for more stable gradient updates
+        # Larger batches reduce noise, improve convergence
+        batch_size = max(16, len(parameters) // 50)
+        print(f"  Using batch size: {batch_size}")
+
         # Callbacks - relaxed for better convergence
         # Monitor 'loss' when no validation split, otherwise 'val_loss'
         monitor_metric = 'loss' if validation_split == 0.0 else 'val_loss'
 
         early_stop = keras.callbacks.EarlyStopping(
             monitor=monitor_metric,
-            patience=30,  # Increased for better convergence
+            patience=50,  # Increased from 30 for better convergence
             restore_best_weights=True,
             min_delta=1e-7  # More sensitive threshold
         )
@@ -123,7 +135,7 @@ class ScalarNNModel:
         reduce_lr = keras.callbacks.ReduceLROnPlateau(
             monitor=monitor_metric,
             factor=0.5,
-            patience=12,  # Increased for better convergence
+            patience=15,  # Increased for better convergence
             min_lr=1e-7
         )
 
@@ -132,7 +144,7 @@ class ScalarNNModel:
             params_scaled, outputs_scaled,
             validation_split=validation_split,
             epochs=epochs,
-            batch_size=8,  # Fixed batch size for stable training
+            batch_size=batch_size,  # Adaptive batch size
             callbacks=[early_stop, reduce_lr],
             verbose=verbose
         )

@@ -175,10 +175,11 @@ def predict_only(dataset_dir, summary, ui_helpers):
         print(f"\n{'='*70}")
         print("  [1] Run Prediction (NN Only)")
         print("  [2] Run Prediction with Fluent Validation")
+        print("  [3] Validate Dataset (Random Point vs Fluent)")
         print("  [0] Back")
         print("="*70)
 
-        choice = ui_helpers.get_choice(2)
+        choice = ui_helpers.get_choice(3)
 
         if choice == 0:
             return
@@ -186,6 +187,8 @@ def predict_only(dataset_dir, summary, ui_helpers):
             run_prediction_workflow(dataset_dir, summary, ui_helpers, run_fluent=False)
         elif choice == 2:
             run_prediction_workflow(dataset_dir, summary, ui_helpers, run_fluent=True)
+        elif choice == 3:
+            validate_dataset_point(dataset_dir, summary, ui_helpers)
 
 
 def run_prediction_workflow(dataset_dir, summary, ui_helpers, run_fluent=False):
@@ -955,4 +958,185 @@ def display_all_plots(predictions, fluent_data, viz_data, ui_helpers):
             display_2d_plot(output_key, pred_data, fluent_data, viz_data, ui_helpers)
         elif pred_data['output_type'] == '3D':
             display_3d_plot(output_key, pred_data, fluent_data, viz_data, ui_helpers)
+
+
+def validate_dataset_point(dataset_dir, summary, ui_helpers):
+    """
+    Validate dataset by comparing a random dataset point with a fresh Fluent simulation.
+    This diagnostic tool checks if the stored dataset values match what Fluent produces
+    with the same input parameters, helping identify data alignment issues.
+
+    Parameters
+    ----------
+    dataset_dir : Path
+        Case directory
+    summary : dict
+        Training summary data
+    ui_helpers : module
+        UI helpers module
+    """
+    ui_helpers.clear_screen()
+    ui_helpers.print_header("DATASET VALIDATION: Compare Dataset vs Fluent")
+
+    print("\nThis tool validates your dataset by:")
+    print("  1. Randomly selecting a point from your dataset")
+    print("  2. Running a fresh Fluent simulation with the SAME input parameters")
+    print("  3. Comparing the stored dataset values vs fresh Fluent results")
+    print("\nIf values don't match, it indicates a data alignment issue.")
+
+    # Load model setup
+    setup_file = dataset_dir / "model_setup.json"
+    with open(setup_file, 'r') as f:
+        setup_data = json.load(f)
+
+    doe_config = setup_data.get('doe_configuration', {})
+
+    # Get list of dataset files
+    dataset_output_dir = dataset_dir / "dataset"
+    output_files = sorted(dataset_output_dir.glob("sim_*.npz"))
+
+    if not output_files:
+        print("\n[X] No dataset files found!")
+        ui_helpers.pause()
+        return
+
+    print(f"\n  Found {len(output_files)} simulations in dataset")
+
+    # Build parameter info (must match training order)
+    param_info = []
+    for bc_name in sorted(doe_config.keys()):
+        params = doe_config[bc_name]
+        for param_name in sorted(params.keys()):
+            values = params[param_name]
+            param_info.append({
+                'bc_name': bc_name,
+                'param_name': param_name,
+                'full_name': f"{bc_name}.{param_name}",
+                'values': values
+            })
+
+    # User can choose specific index or random
+    print("\nSelect dataset point:")
+    choice = input(f"  Enter simulation number (1-{len(output_files)}) or press Enter for random: ").strip()
+
+    if choice:
+        try:
+            sim_index = int(choice) - 1
+            if sim_index < 0 or sim_index >= len(output_files):
+                print(f"  Invalid index, using random")
+                sim_index = np.random.randint(0, len(output_files))
+        except ValueError:
+            print(f"  Invalid input, using random")
+            sim_index = np.random.randint(0, len(output_files))
+    else:
+        sim_index = np.random.randint(0, len(output_files))
+
+    selected_file = output_files[sim_index]
+    sim_number = sim_index + 1
+
+    print(f"\n{'='*70}")
+    print(f"  Selected: {selected_file.name} (Simulation #{sim_number})")
+    print(f"{'='*70}")
+
+    # Load the dataset point
+    print(f"\nLoading dataset point...")
+    dataset_data = np.load(selected_file, allow_pickle=True)
+
+    # Get the input parameters for this simulation
+    # Parameters are stored in DOE arrays - extract the values at this index
+    custom_params = []
+    print(f"\nInput parameters for this simulation:")
+    for i, info in enumerate(param_info):
+        param_value = info['values'][sim_index]
+        custom_params.append(param_value)
+        print(f"  {info['full_name']}: {param_value:.6f}")
+
+    # Show dataset outputs
+    print(f"\nDataset outputs (from {selected_file.name}):")
+    print(f"{'='*70}")
+    for key in sorted(dataset_data.files):
+        if '|' in key and 'coordinates' not in key.lower():
+            data_values = dataset_data[key]
+            if len(data_values) == 1:
+                print(f"  {key:40s}: {data_values[0]:.6f}")
+            else:
+                print(f"  {key:40s}: Array with {len(data_values)} points (mean={np.mean(data_values):.4f})")
+    print(f"{'='*70}")
+
+    # Confirm to run Fluent
+    confirm = input("\nRun Fluent simulation with these same parameters? [y/N]: ").strip().lower()
+
+    if confirm != 'y':
+        print("\n  Validation cancelled")
+        ui_helpers.pause()
+        return
+
+    # Run Fluent validation using the same function as option 2
+    fluent_results = run_fluent_validation(dataset_dir, setup_data, custom_params, param_info, ui_helpers)
+
+    if not fluent_results:
+        print("\n[X] Fluent validation failed")
+        ui_helpers.pause()
+        return
+
+    # Compare results
+    print(f"\n{'='*70}")
+    print("COMPARISON: Dataset vs Fresh Fluent Simulation")
+    print(f"{'='*70}")
+    print(f"{'Output':40s} {'Dataset':>15s} {'Fluent':>15s} {'Diff':>15s} {'% Error':>10s}")
+    print(f"{'='*70}")
+
+    mismatches = []
+
+    for key in sorted(dataset_data.files):
+        if '|' in key and 'coordinates' not in key.lower():
+            dataset_values = dataset_data[key]
+
+            # Find corresponding Fluent data
+            if key in fluent_results:
+                fluent_values = fluent_results[key]
+
+                # Compare
+                if len(dataset_values) == 1:
+                    # Scalar value
+                    dataset_val = dataset_values[0]
+                    fluent_val = fluent_values[0] if len(fluent_values) == 1 else np.mean(fluent_values)
+                    diff = fluent_val - dataset_val
+                    pct_error = abs(diff / dataset_val * 100) if dataset_val != 0 else float('inf')
+
+                    match_symbol = "✓" if abs(pct_error) < 1.0 else "✗"
+                    print(f"{key:40s} {dataset_val:>15.6f} {fluent_val:>15.6f} {diff:>15.6f} {pct_error:>9.2f}% {match_symbol}")
+
+                    if abs(pct_error) > 5.0:
+                        mismatches.append((key, pct_error))
+
+                else:
+                    # Field data - compare means
+                    dataset_mean = np.mean(dataset_values)
+                    fluent_mean = np.mean(fluent_values)
+                    diff = fluent_mean - dataset_mean
+                    pct_error = abs(diff / dataset_mean * 100) if dataset_mean != 0 else float('inf')
+
+                    match_symbol = "✓" if abs(pct_error) < 1.0 else "✗"
+                    print(f"{key:40s} {dataset_mean:>15.6f} {fluent_mean:>15.6f} {diff:>15.6f} {pct_error:>9.2f}% {match_symbol}")
+
+                    if abs(pct_error) > 5.0:
+                        mismatches.append((key, pct_error))
+            else:
+                print(f"{key:40s} (not found in Fluent results)")
+
+    print(f"{'='*70}")
+
+    # Summary
+    if mismatches:
+        print(f"\n⚠ WARNING: {len(mismatches)} significant mismatches found (>5% error):")
+        for key, error in mismatches:
+            print(f"  - {key}: {error:.2f}% error")
+        print(f"\n  This suggests a DATA ALIGNMENT ISSUE in your dataset!")
+        print(f"  The stored dataset values don't match what Fluent produces.")
+    else:
+        print(f"\n✓ All values match within 5% tolerance")
+        print(f"  Dataset appears to be correctly aligned with input parameters")
+
+    ui_helpers.pause()
 

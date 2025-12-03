@@ -99,10 +99,10 @@ def load_training_data(dataset_dir):
     param_names = []
     param_values = []
 
-    # Iterate in sorted order for consistency
-    for bc_name in sorted(doe_config.keys()):
+    # Iterate in original insertion order to match the existing dataset
+    for bc_name in doe_config.keys():
         params = doe_config[bc_name]
-        for param_name in sorted(params.keys()):
+        for param_name in params.keys():
             values = params[param_name]
             param_names.append(f"{bc_name}.{param_name}")
             param_values.append(values)
@@ -213,12 +213,45 @@ def load_training_data(dataset_dir):
             else:
                 print(f"  ⚠ Warning: Key '{npz_key}' not found in simulation data")
 
+    # Optional: Exclude specific simulation ranges (for corrupted data)
+    exclude_start = None
+    exclude_end = None
+
+    print(f"\n{'='*70}")
+    print("DATA EXCLUSION (Optional)")
+    print(f"{'='*70}")
+    print("If you know certain simulations are corrupted, you can exclude them.")
+    print("Example: Exclude simulations 1-2500 to remove bad data")
+    print("\nLeave blank to include all data.")
+
+    exclude_input = input("\nExclude simulation range? (format: start-end, e.g., '1-2500'): ").strip()
+
+    if exclude_input:
+        try:
+            parts = exclude_input.split('-')
+            if len(parts) == 2:
+                exclude_start = int(parts[0])
+                exclude_end = int(parts[1])
+                print(f"  Will exclude simulations {exclude_start} to {exclude_end}")
+            else:
+                print(f"  Invalid format, not excluding any data")
+        except ValueError:
+            print(f"  Invalid format, not excluding any data")
+
     # Validate all files for shape consistency across ALL fields
-    print(f"  Validating {len(output_files)} simulation files...")
+    print(f"\n  Validating {len(output_files)} simulation files...")
     valid_file_indices = []
     invalid_files = []
 
     for i, output_file in enumerate(output_files):
+        # Check if this simulation index should be excluded
+        sim_number = i + 1  # Simulation numbers are 1-indexed
+        if exclude_start is not None and exclude_end is not None:
+            if exclude_start <= sim_number <= exclude_end:
+                # Skip this file - it's in the exclusion range
+                invalid_files.append((i, output_file.name, 'excluded', 'user_excluded', 'N/A'))
+                continue
+
         data = np.load(output_file, allow_pickle=True)
         is_valid = True
 
@@ -242,11 +275,21 @@ def load_training_data(dataset_dir):
 
     # Report validation results
     if invalid_files:
-        print(f"  ⚠ Warning: {len(invalid_files)} files have inconsistent shapes and will be excluded:")
-        for idx, fname, model_key, expected, actual in invalid_files[:5]:
-            print(f"    - {fname} ({model_key}): expected {expected}, got {actual}")
-        if len(invalid_files) > 5:
-            print(f"    ... and {len(invalid_files) - 5} more")
+        excluded_count = sum(1 for f in invalid_files if f[2] == 'excluded')
+        shape_mismatch_count = len(invalid_files) - excluded_count
+
+        if excluded_count > 0:
+            print(f"  ⚠ Excluded {excluded_count} files based on user-specified range")
+
+        if shape_mismatch_count > 0:
+            print(f"  ⚠ Warning: {shape_mismatch_count} files have inconsistent shapes and will be excluded:")
+            shown = 0
+            for idx, fname, model_key, expected, actual in invalid_files:
+                if model_key != 'excluded' and shown < 5:
+                    print(f"    - {fname} ({model_key}): expected {expected}, got {actual}")
+                    shown += 1
+            if shape_mismatch_count > 5:
+                print(f"    ... and {shape_mismatch_count - 5} more")
 
     print(f"  Using {len(valid_file_indices)} valid files out of {len(output_files)}")
 
