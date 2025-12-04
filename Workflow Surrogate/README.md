@@ -459,47 +459,58 @@ Each simulation produces an NPZ file with keys following: `"{location}|{field_na
 
 ---
 
+## Recent Enhancements (December 2025)
+
+### Enhanced Neural Network Architecture
+- **Deeper networks**: 5-layer architecture (128→128→64→32→16) for better feature extraction
+- **Adaptive batch sizing**: Automatically adjusts batch size based on dataset size for stable training
+- **Improved regularization**: Reduced L2 regularization (0.0001) and dropout (0.05) for better convergence
+- **Longer training patience**: 50 epochs early stopping for optimal model performance
+
+### Dataset Validation Tools
+- **Dataset point validation**: Compare stored dataset values against fresh Fluent simulations to detect data alignment issues
+- **Range-based exclusion**: Option to exclude corrupted simulation ranges during training
+- **Alignment diagnostics**: Built-in tools to verify input-output pairing correctness
+
+### Multi-Model Management
+- **Named model folders**: Train and compare multiple model configurations side-by-side
+- **Model selection interface**: Choose which trained model to use for predictions or visualization
+- **Version control**: Keep all model versions organized for easy comparison
+
 ## Troubleshooting
 
-### Issue: Dimension Mismatch Between Training and Prediction
+### Issue: Low R² Scores on Specific Outputs
 
-**Cause:** Using `node_value=True` causes variable point counts between simulations
-**Solution:** Always use `node_value=False` for consistent face-center extraction
-
-### Issue: Perfect R² (1.000) on Training
-
-**Causes:**
-1. Dataset too small (<20 samples)
-2. All training simulations identical (BC application failed)
-3. Overfitting due to early stopping disabled
-
+**Cause:** Model architecture insufficient for complex physics, or corrupted training data
 **Solutions:**
-1. Generate larger DOE (25+ samples minimum)
-2. Verify BC application in Fluent logs shows different values
-3. Check early stopping is enabled (patience=15)
+1. Use enhanced scalar model (5-layer architecture) - automatically enabled
+2. Validate dataset using dataset validation tool (Option 3 in visualization menu)
+3. Exclude corrupted simulation ranges when training (e.g., "1-2500")
+4. Increase training samples if dataset is small (<500 samples)
 
-### Issue: Negative R² on Test/Custom Predictions
+### Issue: Inverse Physical Correlations
 
-**Cause:** Model never learned input-output relationship (training data has no variance)
+**Cause:** Data alignment issue - inputs don't match outputs in dataset
 **Solution:**
-1. Verify DOE has different parameter values
-2. Check BC application logs for errors
-3. Re-run batch simulations after fixing BC syntax
+1. Use "Validate Dataset" tool to compare random points vs fresh Fluent runs
+2. Identify corrupted simulation ranges
+3. Exclude bad ranges during training using range exclusion feature
 
-### Issue: "Output key not found in Fluent data"
+### Issue: Dataset Validation Shows Mismatches
 
-**Cause:** Key format mismatch between model metadata and Fluent extraction
-**Solution:** System now uses `npz_key` (pipe format) for lookups - FIXED in v2025-11-12
+**Cause:** Simulations were run with different settings or parameter ordering changed mid-dataset
+**Solution:**
+1. Identify boundary where data becomes correct (test indices: 1, 500, 2500, 4000)
+2. Exclude corrupted range using training interface
+3. Retrain models with clean data only
 
-### Issue: 3D Plots Slow/Laggy
+### Issue: Model Performance Varies Between Outputs
 
-**Cause:** Too many points being rendered
-**Solution:** System now auto-downsamples to 2000 points - FIXED in v2025-11-12
-
-### Issue: Report Definition Not Trained
-
-**Cause:** Report Definitions weren't auto-configured in output_parameters.json
-**Solution:** Auto-initialization added - FIXED in v2025-11-12
+**Normal behavior** - Different outputs have different complexity:
+- Pressure drop (pdrop): Often >0.95 R² (simple relationship)
+- Outlet temperatures: Typically >0.93 R² (smooth gradients)
+- Chip temperatures: May require enhanced architecture (complex thermal coupling)
+- 2D/3D fields: Dependent on POD mode count and field complexity
 
 ---
 
@@ -550,8 +561,6 @@ Ensure compliance with Ansys Fluent and PyFluent licensing requirements.
 
 ---
 
-**Last Updated:** 2025-12-02
-**Version:** 2.1
+**Last Updated:** 2025-12-03
+**Version:** 2.2
 **Verified Against:** PyFluent v0.35.0
-
-**See Also:** [CURRENT_STATUS.md](CURRENT_STATUS.md) for latest development status and known issues
