@@ -29,3 +29,6 @@ __pycache__/
 # Documentation
 /Field Surrogate/context.md
 /Volume Surrogate/context.md
+
+#python scripts
+visualize_pod.py

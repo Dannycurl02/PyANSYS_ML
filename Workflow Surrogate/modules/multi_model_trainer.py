@@ -24,6 +24,125 @@ from .field_nn_model import FieldNNModel
 from .volume_nn_model import VolumeNNModel
 
 
+def plot_loss_curves(history, model_name, save_dir, output_type):
+    """
+    Plot and save training/validation loss curves for a single model.
+
+    Parameters
+    ----------
+    history : keras.callbacks.History
+        Training history object containing loss values
+    model_name : str
+        Name of the model
+    save_dir : Path
+        Directory to save the plot
+    output_type : str
+        Type of model ('1D', '2D', '3D')
+    """
+    plt.figure(figsize=(10, 6))
+
+    # Plot training loss
+    epochs = range(1, len(history.history['loss']) + 1)
+    plt.plot(epochs, history.history['loss'], 'b-', linewidth=2, label='Training Loss')
+
+    # Plot validation loss if available
+    if 'val_loss' in history.history:
+        plt.plot(epochs, history.history['val_loss'], 'r-', linewidth=2, label='Validation Loss')
+
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel('Loss (MSE)', fontsize=12)
+    plt.title(f'Training History: {model_name}\n({output_type} Model)', fontsize=14, fontweight='bold')
+    plt.legend(fontsize=11)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    # Save plot
+    plot_path = save_dir / f"{model_name}_loss_curve.png"
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+    print(f"  Loss curve saved: {plot_path.name}")
+
+
+def plot_combined_loss_curves(all_histories, save_dir):
+    """
+    Plot combined training and validation loss curves for all models.
+    Creates separate plots for 1D predictions and 2D predictions.
+
+    Parameters
+    ----------
+    all_histories : list of tuples
+        List of (model_name, history, output_type) tuples
+    save_dir : Path
+        Directory to save the plot
+    """
+    # Separate histories by output type
+    histories_1d = [(name, hist, otype) for name, hist, otype in all_histories if otype == '1D']
+    histories_2d = [(name, hist, otype) for name, hist, otype in all_histories if otype == '2D']
+    histories_3d = [(name, hist, otype) for name, hist, otype in all_histories if otype == '3D']
+
+    # Combine 3D with 2D if any exist
+    histories_2d.extend(histories_3d)
+
+    # Plot 1D models
+    if histories_1d:
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+
+        for model_name, history, output_type in histories_1d:
+            epochs = range(1, len(history.history['loss']) + 1)
+
+            # Plot training loss (solid line)
+            ax.plot(epochs, history.history['loss'], '-', linewidth=2,
+                   alpha=0.8, label=f"{model_name} (train)")
+
+            # Plot validation loss if available (dashed line, same color)
+            if 'val_loss' in history.history:
+                ax.plot(epochs, history.history['val_loss'], '--', linewidth=2,
+                       alpha=0.8, label=f"{model_name} (val)")
+
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('Loss (MSE)', fontsize=12)
+        ax.set_title('Training & Validation Loss - 1D Predictions', fontsize=14, fontweight='bold')
+        ax.legend(fontsize=9, loc='best', ncol=1)
+        ax.grid(True, alpha=0.3)
+        ax.set_yscale('log')
+
+        plt.tight_layout()
+        plot_path = save_dir / "combined_loss_curves_1D.png"
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"\n  Combined 1D loss curve saved: {plot_path.name}")
+
+    # Plot 2D models
+    if histories_2d:
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+
+        for model_name, history, output_type in histories_2d:
+            epochs = range(1, len(history.history['loss']) + 1)
+
+            # Plot training loss (solid line)
+            ax.plot(epochs, history.history['loss'], '-', linewidth=2,
+                   alpha=0.8, label=f"{model_name} (train)")
+
+            # Plot validation loss if available (dashed line, same color)
+            if 'val_loss' in history.history:
+                ax.plot(epochs, history.history['val_loss'], '--', linewidth=2,
+                       alpha=0.8, label=f"{model_name} (val)")
+
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('Loss (MSE)', fontsize=12)
+        ax.set_title('Training & Validation Loss - 2D Predictions', fontsize=14, fontweight='bold')
+        ax.legend(fontsize=9, loc='best', ncol=1)
+        ax.grid(True, alpha=0.3)
+        ax.set_yscale('log')
+
+        plt.tight_layout()
+        plot_path = save_dir / "combined_loss_curves_2D.png"
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"\n  Combined 2D loss curve saved: {plot_path.name}")
+
+
 def detect_output_type(data_shape):
     """
     Detect if output is 1D (scalar), 2D (field), or 3D (volume).
@@ -499,6 +618,7 @@ def train_all_models(dataset_dir, ui_helpers, test_size=0.2, epochs=500):
         # Track model counts for naming (in case of duplicates)
         model_counts = {}
         trained_models = []
+        all_histories = []  # Store all training histories for combined plot
 
         # Train each output
         for output_key, output_data in outputs.items():
@@ -550,12 +670,12 @@ def train_all_models(dataset_dir, ui_helpers, test_size=0.2, epochs=500):
                 else:
                     raise ValueError(f"Unknown 3D model type: {model_selection['3D']}")
 
-            # Train - use test set for validation (already split externally)
-            # Pass validation data explicitly instead of splitting again
+            # Train with validation split for monitoring convergence
+            # Use 20% of training data for validation during training
             model.fit(
                 X_params[train_idx],
                 output_data[train_idx],
-                validation_split=0.0,  # Don't split again - we already have train/test split
+                validation_split=0.2,  # Use 20% of train data for validation monitoring
                 epochs=epochs,
                 verbose=0
             )
@@ -574,6 +694,11 @@ def train_all_models(dataset_dir, ui_helpers, test_size=0.2, epochs=500):
             # Save model
             model_path = models_dir / model_name
             model.save(model_path)
+
+            # Plot and save training/validation loss curves
+            if hasattr(model, 'history') and model.history is not None:
+                plot_loss_curves(model.history, model_name, models_dir, output_type)
+                all_histories.append((model_name, model.history, output_type))
 
             # Save metadata
             metadata = {
@@ -612,11 +737,17 @@ def train_all_models(dataset_dir, ui_helpers, test_size=0.2, epochs=500):
             'n_test_samples': len(test_idx),
             'test_split': test_size,
             'epochs': epochs,
+            'test_indices': test_idx.tolist(),  # Save test indices for visualization
+            'train_indices': train_idx.tolist(),  # Save train indices for reference
             'models': trained_models
         }
 
         with open(models_dir / "training_summary.json", 'w') as f:
             json.dump(summary, f, indent=2)
+
+        # Create combined loss curves plot for all models
+        if all_histories:
+            plot_combined_loss_curves(all_histories, models_dir)
 
         print(f"\n{'='*70}")
         print(f"TRAINING COMPLETE!")
@@ -625,6 +756,7 @@ def train_all_models(dataset_dir, ui_helpers, test_size=0.2, epochs=500):
         for model_meta in trained_models:
             print(f"  - {model_meta['model_name']:30s} (Test R²: {model_meta['test_metrics']['r2']:.4f})")
         print(f"\nModels saved to: {models_dir}")
+        print(f"Loss curves saved: {len(all_histories)} individual plots + 1 combined plot")
 
     except Exception as e:
         print(f"\n[X] Error during training: {e}")
