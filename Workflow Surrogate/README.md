@@ -1,20 +1,4 @@
 # Workflow Surrogate - Automated CFD Surrogate Model System
-
-**Official PyFluent Repository:** [https://github.com/ansys/pyfluent](https://github.com/ansys/pyfluent)
-**Official PyFluent Documentation:** [https://fluent.docs.pyansys.com/version/stable/](https://fluent.docs.pyansys.com/version/stable/)
-
----
-
-## Table of Contents
-1. [Overview](#overview)
-2. [Technical Overview](#technical-overview)
-3. [Architecture](#architecture)
-4. [Key Features](#key-features)
-5. [PyFluent Implementation](#pyfluent-implementation-details)
-6. [Usage Guide](#usage-guide)
-7. [Troubleshooting](#troubleshooting)
-8. [Requirements](#version-requirements)
-
 ---
 
 ## Overview
@@ -23,7 +7,7 @@ The Workflow Surrogate system is an integrated platform for creating neural netw
 
 ### What This System Does:
 
-1. **Design of Experiments (DOE)** - Automated full-factorial parameter space sampling
+1. **Design of Experiments (DOE)** - Automated LHS parameter space sampling
 2. **Batch Simulation** - Parallel execution of Fluent simulations with varying BCs
 3. **Data Extraction** - Automated extraction of scalar, 2D surface, and 3D volume fields
 4. **Multi-Model Training** - Automatic training of specialized neural networks for each output type
@@ -35,10 +19,10 @@ The Workflow Surrogate system is an integrated platform for creating neural netw
 
 ### Objectives
 
-The primary goal is to create **fast, accurate surrogate models** that can replace expensive CFD simulations for design space exploration, optimization, and uncertainty quantification. The system targets:
+The primary goal is to create fast, accurate surrogate models that can replace expensive CFD simulations for design space exploration and optimization. The system targets:
 
 - **Speed:** 1000-10000× faster than CFD for predictions
-- **Accuracy:** >90% R² on test data
+- **Accuracy:** >98% R² on test data
 - **Flexibility:** Handles scalar, 2D field, and 3D volume outputs simultaneously
 - **Automation:** Minimal user intervention after initial setup
 
@@ -51,54 +35,39 @@ For high-dimensional field data (2D surfaces, 3D volumes), direct neural network
 - Risk of overfitting
 - Memory constraints
 
-**POD Solution:**
-```
-Original field: Y(x,t) ∈ ℝⁿ (n = thousands to millions)
-↓ POD Decomposition
-Y(x,t) ≈ Σᵢ αᵢ(t)φᵢ(x)
-↓ Dimension Reduction
-POD coefficients: α(t) ∈ ℝᵐ (m = 8-20 modes)
-```
-
 The neural network learns the mapping: **Parameters → POD Coefficients**
 
 Then reconstructs full fields via: **Full Field = Σ(coefficients × POD modes)**
 
-**Variance Captured:**
-- 2D Fields (8-10 modes): typically 95-99.9% variance
-- 3D Volumes (15-20 modes): typically 90-98% variance
 
 #### 2. Neural Network Architectures
 
-**Scalar Model** (1D outputs ≤100 points):
+**1D Model** :
 ```
 Input(n_params) → Dense(64, ReLU) → Dense(32, ReLU) → Dense(16, ReLU) → Output(n_scalars)
 ```
 - Direct regression, no POD needed
 - Used for: Report definitions, average values, single points
 
-**Field Model** (2D outputs 100-10,000 points):
+**2D Model** :
 ```
 Input(n_params) → Dense(64, ReLU) → Dense(64, ReLU) → Dense(32, ReLU) → Output(n_modes)
 ```
 - POD-based compression
 - Used for: Surface temperature/pressure/velocity distributions
-- Typical modes: 8-10
 
-**Volume Model** (3D outputs >10,000 points):
+**3D Model** :
 ```
 Input(n_params) → Dense(128, ReLU) → Dense(128, ReLU) → Dense(64, ReLU) → Dense(64, ReLU) → Output(n_modes)
 ```
 - Deeper architecture for complex 3D fields
 - POD-based compression
 - Used for: Full 3D cell zone data
-- Typical modes: 15-20
 
 #### 3. Training Strategy
 
 **Data Split:**
 - 80% training / 20% testing (random split)
-- Minimum 20 samples recommended (80% of 25 = 20 train samples)
 
 **Optimization:**
 - Adam optimizer with default learning rate (0.001)
@@ -111,38 +80,20 @@ Input(n_params) → Dense(128, ReLU) → Dense(128, ReLU) → Dense(64, ReLU) �
 
 ### Model Capabilities
 
-**What the Models Can Do:**
 - **Interpolation:** Predict outputs for parameter combinations within the training range
 - **Fast Evaluation:** 1000-10000× faster than CFD
 - **Uncertainty Estimation:** Comparing Fluent validation runs to NN predictions
 - **Multi-Output:** Simultaneous prediction of multiple fields/scalars
 
-**What the Models Cannot Do:**
-- **Extrapolation:** Unreliable for parameters outside training range
-- **Geometry Changes:** Models are tied to specific mesh/geometry
-- **Physics Changes:** Cannot handle different fluids, turbulence models, etc. without retraining
-- **Transient Dynamics:** Currently only steady-state or time-averaged fields
 
 ### Limitations
 
-1. **Data Requirements:**
-   - Minimum ~20-25 simulations for reliable training
-   - More parameters → more data needed (curse of dimensionality)
-   - Full factorial DOE with 5 levels × 2 params = 25 simulations minimum
-
-2. **Computational Constraints:**
-   - POD modes limited by number of training samples (n_modes < n_samples)
-   - 3D volume data can be memory-intensive (visualization downsampled to 2000 points)
-
-3. **Accuracy Trade-offs:**
-   - POD introduces reconstruction error (~1-10% for 8-20 modes)
-   - Neural network introduces regression error (~5-15% test MAE typical)
-   - Combined error: 5-20% depending on complexity
-
-4. **Scope:**
    - Single geometry per model
    - Steady-state or ensemble-averaged results only
    - Boundary condition parameters only (no material property variations currently)
+   - Unreliable for parameters outside training range
+   - Models are tied to specific mesh/geometry
+
 
 ### Validation Workflow
 
@@ -204,363 +155,3 @@ Projects/
 ```
 
 ---
-
-## Key Features
-
-### Recent Improvements
-
-#### December 2025 - Multi-Model Management System
-
-1. **Named Model Folders**
-   - Train multiple model configurations without overwriting
-   - Each model set stored in its own named folder
-   - Easy comparison between different model versions
-
-2. **Model Selection Interface**
-   - Training: Prompts for model name at start
-   - Visualization: Select which model to visualize from menu
-   - Digital Twin: GUI dialog for model selection at startup
-   - Shows metadata (number of models, training date)
-
-3. **Version Control**
-   - Keep all model versions organized
-   - Test different configurations side-by-side
-   - Compare accuracy between parameter orderings
-
-#### November 2025 - Fluent Validation & Visualization
-
-1. **Fluent Validation Integration**
-   - Added real-time Fluent comparison during predictions
-   - 3-panel visualization (Fluent | NN | Error)
-   - Keeps Fluent console visible for iteration monitoring
-
-2. **Visualization Enhancements**
-   - Fixed key format mismatch for Fluent data lookup
-   - Added proper 3D aspect ratio based on geometry
-   - Downsampling for large 3D datasets (2000 points) for performance
-   - Synchronized color scales between Fluent and NN plots
-
-3. **Report Definition Auto-Configuration**
-   - Automatic initialization of scalar outputs (Report Definitions)
-   - Fixed bug where 1D models weren't being trained
-   - No manual configuration needed for pre-configured Fluent reports
-
-4. **Code Quality**
-   - Removed deprecated modules and debug scripts
-   - Consolidated duplicate code by reusing `simulation_runner` functions
-   - Improved error handling and user feedback
-
----
-
-## PyFluent Implementation Details
-
-### ⚠️ MANDATORY REQUIREMENTS FOR CODING AGENTS ⚠️
-
-**ALL code modifications MUST follow the official PyFluent API syntax from the repository above.**
-
-### Critical PyFluent Syntax Rules:
-
-1. **Setting Boundary Condition Values:**
-   ```python
-   # ✅ CORRECT - Use .value attribute
-   solver_session.setup.boundary_conditions.velocity_inlet["inlet-name"].momentum.velocity_magnitude.value = 1.0
-
-   # ❌ WRONG - Do NOT use set_state() or setattr()
-   param_obj.set_state(value)  # INCORRECT
-   setattr(target_obj, param_name, value)  # INCORRECT
-   ```
-
-2. **Accessing Boundary Conditions:**
-   ```python
-   # Access pattern:
-   bc = solver_session.setup.boundary_conditions.{bc_type}["{bc_name}"]
-
-   # Examples:
-   cold_inlet = solver_session.setup.boundary_conditions.velocity_inlet["cold-inlet"]
-   outlet = solver_session.setup.boundary_conditions.pressure_outlet["outlet"]
-   ```
-
-3. **Parameter Navigation:**
-   ```python
-   # For nested parameters like momentum.velocity_magnitude:
-   cold_inlet.momentum.velocity_magnitude.value = 0.4
-   cold_inlet.thermal.temperature.value = 293.15
-   cold_inlet.turbulence.turbulent_intensity = 0.05
-   ```
-
-### Boundary Condition Application
-
-**Location:** `simulation_runner.py:apply_boundary_conditions()`
-
-```python
-def apply_boundary_conditions(solver, bc_values):
-    """Apply BCs using official PyFluent syntax."""
-    boundary_conditions = solver.setup.boundary_conditions
-
-    for bc_key, bc_info in bc_values.items():
-        bc_name = bc_info['bc_name']
-        bc_type = bc_info['bc_type']  # e.g., 'velocity_inlet'
-        param_path = bc_info['param_path']  # e.g., 'momentum.velocity_magnitude'
-        value = bc_info['value']
-
-        # Get BC object by type and name
-        bc_container = getattr(boundary_conditions, bc_type)
-        bc_obj = bc_container[bc_name]
-
-        # Navigate to parameter and set .value
-        target = bc_obj
-        for part in param_path.split('.')[:-1]:
-            target = getattr(target, part)
-
-        param_name = param_path.split('.')[-1]
-        param_obj = getattr(target, param_name)
-        param_obj.value = value  # ✅ CORRECT SYNTAX
-```
-
-### Data Extraction Methods
-
-**2D Surface Data:**
-```python
-# Correct syntax for consistent point counts
-field_data.get_scalar_field_data(
-    field_name='temperature',
-    surfaces=['mid-plane'],
-    node_value=False  # ✅ Use face centers for consistency
-)
-```
-
-**3D Volume Data:**
-```python
-# Extract cell zone data using solution variables
-solver.fields.solution_variable_data.get_data(
-    zone_names=['fluid'],
-    variable_name='SV_T',  # Temperature (SV_ prefix for solution variables)
-    domain_name='mixture'
-)
-```
-
-**Report Definitions (Scalars):**
-```python
-# Report definitions are pre-configured in Fluent
-# Extract using standard field data API
-report_value = solver.fields.report_definitions[report_name]()
-```
-
----
-
-## Usage Guide
-
-### 1. Create New Project & Case
-
-```
-Main Menu → [1] Create New Project
-  → Enter project name
-  → [1] Create New Case
-  → Enter case name
-  → [1] Open Fluent Case File
-  → Select .cas or .cas.h5 file
-```
-
-### 2. Configure Inputs & Outputs
-
-```
-Setup Menu → [1] Configure Model Inputs
-  → Select boundary conditions (velocity inlets, etc.)
-
-Setup Menu → [2] Configure Model Outputs
-  → Select surfaces for 2D field data
-  → Select cell zones for 3D volume data
-  → Select report definitions for scalar data
-
-Setup Menu → [3] Configure Output Parameters
-  → Select field variables (temperature, pressure, velocity, etc.)
-  → Report Definitions auto-configured ✓
-
-Setup Menu → [4] Design of Experiment Setup
-  → Enter min/max values for each BC parameter
-  → Enter number of levels (5 recommended)
-  → System generates full factorial DOE
-```
-
-### 3. Run Batch Simulations
-
-```
-Setup Menu → [5] Save Setup & Finish
-  → Choose number of iterations per simulation
-  → System runs all DOE combinations automatically
-  → Progress: [■■■■■░░░░░] 12/25 complete
-```
-
-### 4. Train Surrogate Models
-
-```
-Case Menu → [2] Train Surrogate Models
-  → System auto-detects output types (1D/2D/3D)
-  → Trains specialized model for each output
-  → Displays training metrics (R², MAE, RMSE)
-```
-
-### 5. Make Predictions
-
-```
-Case Menu → [3] Visualize & Predict
-  → [1] Run Prediction (NN Only) - Fast predictions
-  → [2] Run Prediction with Fluent Validation - Compare to CFD
-
-  → Enter parameter values (or use random)
-  → View 3-panel plots: Fluent | NN | Error
-  → Check scalar results summary table
-```
-
----
-
-## Data Format
-
-### NPZ Files (`sim_XXXX.npz`)
-
-Each simulation produces an NPZ file with keys following: `"{location}|{field_name}"`
-
-```python
-# Example structure:
-{
-    "mid-plane|temperature": array([2337]),         # 2D surface field
-    "mid-plane|coordinates": array([[x,y,z], ...]),  # Spatial coordinates
-    "fluid|velocity-magnitude": array([45678]),     # 3D volume field
-    "fluid|coordinates": array([[x,y,z], ...]),
-    "avg-outlet-temp|temperature": array([val])     # Scalar report
-}
-```
-
-### Model Metadata
-
-**Training Summary (`training_summary.json`):**
-```json
-{
-  "case_name": "5x5",
-  "trained_date": "2025-11-11T18:56:13",
-  "n_models": 7,
-  "models": [
-    {
-      "model_name": "2D_temperature_1",
-      "output_key": "mid-plane_temperature",
-      "npz_key": "mid-plane|temperature",
-      "output_type": "2D",
-      "n_modes": 8,
-      "variance_explained": 0.9977,
-      "test_metrics": {
-        "r2": 0.9646,
-        "mae": 0.6407,
-        "rmse": 1.4773
-      }
-    }
-  ]
-}
-```
-
----
-
-## Recent Enhancements (December 2025)
-
-### Enhanced Neural Network Architecture
-- **Deeper networks**: 5-layer architecture (128→128→64→32→16) for better feature extraction
-- **Adaptive batch sizing**: Automatically adjusts batch size based on dataset size for stable training
-- **Improved regularization**: Reduced L2 regularization (0.0001) and dropout (0.05) for better convergence
-- **Longer training patience**: 50 epochs early stopping for optimal model performance
-
-### Dataset Validation Tools
-- **Dataset point validation**: Compare stored dataset values against fresh Fluent simulations to detect data alignment issues
-- **Range-based exclusion**: Option to exclude corrupted simulation ranges during training
-- **Alignment diagnostics**: Built-in tools to verify input-output pairing correctness
-
-### Multi-Model Management
-- **Named model folders**: Train and compare multiple model configurations side-by-side
-- **Model selection interface**: Choose which trained model to use for predictions or visualization
-- **Version control**: Keep all model versions organized for easy comparison
-
-## Troubleshooting
-
-### Issue: Low R² Scores on Specific Outputs
-
-**Cause:** Model architecture insufficient for complex physics, or corrupted training data
-**Solutions:**
-1. Use enhanced scalar model (5-layer architecture) - automatically enabled
-2. Validate dataset using dataset validation tool (Option 3 in visualization menu)
-3. Exclude corrupted simulation ranges when training (e.g., "1-2500")
-4. Increase training samples if dataset is small (<500 samples)
-
-### Issue: Inverse Physical Correlations
-
-**Cause:** Data alignment issue - inputs don't match outputs in dataset
-**Solution:**
-1. Use "Validate Dataset" tool to compare random points vs fresh Fluent runs
-2. Identify corrupted simulation ranges
-3. Exclude bad ranges during training using range exclusion feature
-
-### Issue: Dataset Validation Shows Mismatches
-
-**Cause:** Simulations were run with different settings or parameter ordering changed mid-dataset
-**Solution:**
-1. Identify boundary where data becomes correct (test indices: 1, 500, 2500, 4000)
-2. Exclude corrupted range using training interface
-3. Retrain models with clean data only
-
-### Issue: Model Performance Varies Between Outputs
-
-**Normal behavior** - Different outputs have different complexity:
-- Pressure drop (pdrop): Often >0.95 R² (simple relationship)
-- Outlet temperatures: Typically >0.93 R² (smooth gradients)
-- Chip temperatures: May require enhanced architecture (complex thermal coupling)
-- 2D/3D fields: Dependent on POD mode count and field complexity
-
----
-
-## Version Requirements
-
-### Core Dependencies
-- **Python:** 3.9+
-- **PyFluent:** 0.35.0+ ([Latest](https://github.com/ansys/pyfluent))
-- **TensorFlow/Keras:** 2.13+
-- **scikit-learn:** 1.3+
-- **NumPy:** 1.24+
-- **Matplotlib:** 3.7+
-
-### Ansys Fluent
-- **Fluent:** 2023 R1 or newer
-- **License:** Valid Ansys license with Fluent solver
-- **VPN:** Required if license server is remote
-
-### Installation
-
-```bash
-pip install ansys-fluent-core tensorflow scikit-learn numpy matplotlib
-```
-
----
-
-## References
-
-- [PyFluent Official Repository](https://github.com/ansys/pyfluent)
-- [PyFluent Documentation](https://fluent.docs.pyansys.com/version/stable/)
-- [PyFluent Examples](https://fluent.docs.pyansys.com/version/stable/examples/index.html)
-- [Mixing Elbow Settings API Example](https://fluent.docs.pyansys.com/version/stable/examples/00-fluent/mixing_elbow_settings_api.html)
-- Berkooz, G., Holmes, P., & Lumley, J. L. (1993). "The Proper Orthogonal Decomposition in the Analysis of Turbulent Flows." *Annual Review of Fluid Mechanics*, 25(1), 539-575.
-
----
-
-## Citation
-
-If using this system for research, please cite:
-- Ansys PyFluent: [https://github.com/ansys/pyfluent](https://github.com/ansys/pyfluent)
-- Your institution's surrogate modeling methodology
-
----
-
-## License
-
-Ensure compliance with Ansys Fluent and PyFluent licensing requirements.
-
----
-
-**Last Updated:** 2025-12-03
-**Version:** 2.2
-**Verified Against:** PyFluent v0.35.0
